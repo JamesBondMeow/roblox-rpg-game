@@ -1,0 +1,18 @@
+--[[
+	removeValue
+	
+	Used for item libraries to remove new items (opposite of createValue)
+]]
+
+return function(pData, Item, Amount, Library)
+	Amount = Amount or 1
+	
+	local ItemValue = pData.Items[Library]:FindFirstChild(Item.Name)
+	if not ItemValue then return end
+
+	if ItemValue.Value - Amount <= 0 then
+		ItemValue:Destroy()
+	else
+		ItemValue.Value -= Amount
+	end
+end

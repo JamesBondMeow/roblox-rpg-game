@@ -1,5 +1,4 @@
 --[[
-	Evercyan @ March 2023
 	DataManager
 	
 	DataManager handles all user data, like Levels, Tools, Armor, and even misc values that save, such as active armor.

@@ -1,0 +1,106 @@
+--[[
+    ClientOrbAnimator (local script)
+    
+    This script runs on the client and handles the visual orbiting animation
+    for all players' equipped orbs. It finds the orb parts cloned by the
+    server-side Morph script and updates their CFrame on every frame to create
+    a smooth circular motion.
+]]
+
+-- Services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+-- Configuration
+local ORB_RADIUS = 10
+local ORBIT_SPEED = 100 -- Degrees per second
+
+-- A table to store the animation state (the base angle) for each character.
+-- The key is the character model, the value is a table with its orb system data.
+local characterOrbSystems = {}
+
+-- This function is called when a character is added to the game.
+-- It creates a new orb system tracker for the character.
+local function setupCharacter(character)
+	-- If a system for this character already exists, do nothing.
+	if characterOrbSystems[character] then return end
+
+	-- Create the new system with a starting base angle
+	characterOrbSystems[character] = {
+		baseAngle = 0
+	}
+
+	-- When the character is destroyed, clean up its entry to prevent memory leaks
+	character.Destroying:Connect(function()
+		characterOrbSystems[character] = nil
+	end)
+end
+
+-- Setup for all players, both current and future
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(setupCharacter)
+	if player.Character then
+		setupCharacter(player.Character)
+	end
+end)
+for _, player in ipairs(Players:GetPlayers()) do
+	player.CharacterAdded:Connect(setupCharacter)
+	if player.Character then
+		setupCharacter(player.Character)
+	end
+end
+
+
+-- The main animation loop, runs on every frame
+RunService.RenderStepped:Connect(function(deltaTime)
+	-- Loop through all the character systems we're tracking
+	for character, system in pairs(characterOrbSystems) do
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+		if not rootPart then continue end
+
+		local orbGroup = character:FindFirstChild("OrbGroup")
+		if not orbGroup then continue end
+
+		local orbs = orbGroup:GetChildren()
+		if #orbs == 0 then continue end
+
+		-- Increment the SHARED base angle for the entire group using deltaTime
+		local rotationIncrement = math.rad(ORBIT_SPEED) * deltaTime
+		system.baseAngle = system.baseAngle + rotationIncrement
+
+		-- This ensures the orbit plane is always level with the ground
+		local anchorCFrame = CFrame.new(rootPart.Position)
+
+		-- This is used to space multiple orbs out evenly around the circle
+		local angleIncrement = (2 * math.pi) / #orbs
+
+		-- IMPORTANT: Sort the orbs by name to ensure their order is always stable.
+		-- This prevents orbs from swapping positions when one is re-equipped.
+		table.sort(orbs, function(a, b)
+			return a.Name < b.Name
+		end)
+
+		for i, orbPart in ipairs(orbs) do
+			if orbPart:IsA("BasePart") then
+				local weld = orbPart:FindFirstChild("OrbWeld")
+				if not weld then continue end
+
+				-- 1. Get the shared base angle
+				-- 2. Add a consistent offset based on the orb's sorted position in the group
+				local angleOffset = (i - 1) * angleIncrement
+				local finalAngle = system.baseAngle + angleOffset
+
+				-- Calculate the new position in the orbit circle
+				local orbitalOffset = CFrame.new(
+					ORB_RADIUS * math.cos(finalAngle),
+					0,
+					ORB_RADIUS * math.sin(finalAngle)
+				)
+
+				-- Update the weld's offset (C1). This calculation keeps the orbit stable
+				-- and prevents it from tilting when the character looks up or down.
+				weld.C1 = rootPart.CFrame:ToObjectSpace(anchorCFrame * orbitalOffset)
+			end
+		end
+	end
+end)

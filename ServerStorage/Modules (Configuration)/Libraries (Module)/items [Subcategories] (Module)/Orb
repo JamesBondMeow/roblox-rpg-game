@@ -1,0 +1,204 @@
+--[[
+	OrbLib
+	
+	Acts similar to ArmorLib & AccesoryLib scripts for a few given differences.
+]]
+
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Players = game:GetService("Players")
+
+--> References
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+
+local Morph = require(ServerStorage.Modules.Server.Morph)
+local CreateValue = require(ServerStorage.Modules.Server.createValue)
+local RemoveValue = require(ServerStorage.Modules.Server.removeValue)
+
+local GameConfig = require(ReplicatedStorage.GameConfig)
+
+--> Variables
+local Library = script.Name
+
+local Debounce = {}
+local OrbLib = {}
+
+--------------------------------------------------------------------------------
+
+local function RequestCallback(Model, Name, CallbackType, Parameters)
+	EventModule:Fire("ServerToServerEquipmentCallback", Model, Name, CallbackType, Parameters)
+	EventModule:FireAllClients("ServerToClientEquipmentCallback", Model, Name, CallbackType, Parameters)
+end
+
+function OrbLib:Give(Player: Player, Orb, DontSave, ShopBought, Amount)
+	local pData = PlayerData:WaitForChild(Player.UserId, 5)
+	
+	local isItem = typeof(Orb) == "table"
+	if not isItem then
+		warn(`Item {Library} --> {tostring(Orb) or "nil"} doesn't exist as a table, try using ContentLibrary.`)
+		return
+	end
+	
+	if pData then
+		local Found = pData.Items[Library]:FindFirstChild(Orb.Name)
+		
+		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Library].IsStackable
+		local CanGive = ((not Found) or IsStackable)
+		
+		local CanBuyMultiple = ShopBought == "Force" or (ShopBought and (not Orb.Config.Cost[4]) and IsStackable)
+		if CanGive or CanBuyMultiple then
+			CreateValue(pData, Orb, DontSave, Amount, Library)
+			return true
+		end
+	else
+		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
+	end
+end
+
+function OrbLib:Trash(Player: Player, Orb, Amount)
+	local pData = PlayerData:WaitForChild(Player.UserId, 5)
+
+	if pData then
+		RemoveValue(pData, Orb, Amount, Library)
+		
+		for _, Slot in pData.EquippedOrbs:GetChildren() do
+			if Slot.Value == Orb.Name then
+				OrbLib:UnequipOrb(Player, tonumber(Slot.Name), Slot.Value)
+				
+				Slot.Value = ""
+			end
+		end
+	else
+		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
+	end
+end
+
+function OrbLib:EquipOrb(Player: Player, Orb, Index)
+	local Character = Player.Character
+	
+	local Humanoid = Character and Character:FindFirstChild("Humanoid")
+	local Attributes = Humanoid and Humanoid:WaitForChild("Attributes", 1)
+	if not Attributes or Humanoid.Health <= 0 then return end
+	
+	local Key = "Orb" .. tostring(Index)
+	
+	-- Humanoid changes
+	Attributes.Health:SetAttribute(Key, Orb.Config.Health)
+	Attributes.WalkSpeed:SetAttribute(Key, Orb.Config.WalkSpeed)
+	Attributes.JumpPower:SetAttribute(Key, Orb.Config.JumpPower)
+	
+	if Orb.Config.Mana then
+		local ManaAttributes = Humanoid:WaitForChild("Mana")
+		ManaAttributes.MaxMana:SetAttribute(Key, Orb.Config.Mana)
+	end
+	
+	-- Morph changes
+	Morph:AddOrb(Player, Orb, Index)
+	RequestCallback(Orb.Instance, Orb.Name, "OnEquipped", {Player, Orb.Config})
+end
+
+function OrbLib:UnequipOrb(Player: Player, Index, OrbName)
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChild("Humanoid")
+	
+	local Orb = ContentLibrary[Library][OrbName]
+	local Key = "Orb" .. tostring(Index)
+	
+	RequestCallback(Orb.Instance, Orb.Name, "OnUnequipped", {Player, Orb.Config})
+	
+	-- Humanoid changes
+	local Attributes = Humanoid and Humanoid:FindFirstChild("Attributes")
+	if Attributes then
+		Attributes.Health:SetAttribute(Key, nil)
+		Attributes.WalkSpeed:SetAttribute(Key, nil)
+		Attributes.JumpPower:SetAttribute(Key, nil)
+	end
+	
+	local ManaAttributes = Humanoid and Humanoid:FindFirstChild("Mana")
+	if ManaAttributes then
+		ManaAttributes.MaxMana:SetAttribute(Key, nil)
+	end
+
+	-- Morph changes
+	Morph:RemoveOrb(Player, Index)
+end
+
+---- Remotes -------------------------------------------------------------------
+
+EventModule:GetOnServerInvoke("EquipOrb", function(Player: Player, OrbName: string, Index: number)
+	if typeof(OrbName) ~= "string" then return end
+
+	local pData = PlayerData:WaitForChild(Player.UserId)
+	local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
+
+	local Slot = EquippedOrbs:FindFirstChild(tonumber(Index))
+	if not Slot or Slot.Value ~= "" then return end
+
+	local Orb = ContentLibrary[Library][OrbName]
+	if Orb and not Debounce[Player.UserId] then
+		task.delay(0.25, function()
+			Debounce[Player.UserId] = nil
+		end)
+		Debounce[Player.UserId] = true
+
+		Slot.Value = OrbName
+
+		OrbLib:EquipOrb(Player, Orb, Index)
+	end
+end)
+
+EventModule:GetOnServerInvoke("UnequipOrb", function(Player: Player, Index: number)
+	local pData = PlayerData:WaitForChild(Player.UserId)
+	local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
+
+	local Slot = EquippedOrbs:FindFirstChild(tostring(Index))
+	if Slot and Slot.Value ~= "" then
+		OrbLib:UnequipOrb(Player, Index, Slot.Value)
+
+		Slot.Value = ""
+	end
+end)
+
+--------------------------------------------------------------------------------
+
+local function OnPlayerAdded(Player: Player)
+	local pData = PlayerData:WaitForChild(Player.UserId)
+	
+	local function OnCharacterAdded(Character)
+		local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
+		
+		local function EquipOrb(Orb, Index)
+			if Player:HasAppearanceLoaded() then
+				OrbLib:EquipOrb(Player, Orb, Index)
+			else
+				Player.CharacterAppearanceLoaded:Once(function()
+					OrbLib:EquipOrb(Player, Orb, Index)
+				end)
+			end
+		end
+		
+		for _, Slot in EquippedOrbs:GetChildren() do
+			local Orb = Slot.Value ~= "" and ContentLibrary[Library][Slot.Value]
+			if Orb then
+				task.spawn(EquipOrb, Orb, tonumber(Slot.Name))
+			end
+		end
+	end
+	
+	if Player.Character then
+		OnCharacterAdded(Player.Character)
+	end
+	
+	Player.CharacterAdded:Connect(OnCharacterAdded)
+end
+
+for _, Player in Players:GetChildren() do
+	task.defer(OnPlayerAdded, Player)
+end
+Players.PlayerAdded:Connect(OnPlayerAdded)
+return OrbLib

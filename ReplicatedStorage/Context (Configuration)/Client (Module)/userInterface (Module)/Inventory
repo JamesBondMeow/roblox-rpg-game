@@ -1,8 +1,7 @@
 --[[
-	Inventory
+	Inventory (Client)
 	
-	InventoryGuiScript handles the player inventory - this includes everything relating to the
-	inventory system.
+	Handles inventory slots, hotbar, and the new Equipment UI.
 ]]
 
 --> Services
@@ -46,7 +45,7 @@ return function(Gui)
 		Gui:Destroy()
 		return
 	end
-	
+
 	--> References
 	local Main = Gui:WaitForChild("Main")
 	local Hotbar = Main:WaitForChild("Hotbar")
@@ -54,10 +53,27 @@ return function(Gui)
 	local InventoryItems = Inventory:WaitForChild("Items")
 	local InventoryFrame = InventoryItems:WaitForChild("Frame")
 	local InventoryList = InventoryItems:WaitForChild("ScrollingFrame")
-	
+
 	local HideCanvas = Main:WaitForChild("HideCanvas")
-	local TooltipFrame = Player.PlayerGui:WaitForChild("Tooltip"):WaitForChild("Frame")
-	
+
+	-- EQUIPMENT REFERENCES
+	local EquipmentButton = Inventory:WaitForChild("EquipmentButton")
+	local EquipmentFrame = Main:WaitForChild("Equipment")
+	local EquipmentMain = EquipmentFrame:WaitForChild("Main")
+
+	local EquipmentSlots = {
+		Helmet = EquipmentMain:WaitForChild("HelmetSlot"),
+		Pauldron = EquipmentMain:WaitForChild("PauldronSlot"),
+		Chestplate = EquipmentMain:WaitForChild("ChestplateSlot"),
+		Accessory1 = EquipmentMain:WaitForChild("Accessory1Slot"),
+		Accessory2 = EquipmentMain:WaitForChild("Accessory2Slot"),
+		Orb1 = EquipmentMain:WaitForChild("Orb1Slot"),
+		Orb2 = EquipmentMain:WaitForChild("Orb2Slot"),
+		Orb3 = EquipmentMain:WaitForChild("Orb3Slot"),
+	}
+
+	local EquipmentExitButton = EquipmentFrame:WaitForChild("ExitButton")
+
 	--> Variables
 	local BackpackItemAdded = Instance.new("BindableEvent")
 	local BackpackItemRemoved = Instance.new("BindableEvent")
@@ -65,12 +81,23 @@ return function(Gui)
 	local BackpackItemUnequipped = Instance.new("BindableEvent")
 	local EquippedTool
 
-	local Slots = {} :: {Slot}
-	local HotbarSlots = {} :: {HotbarSlot}
+	local Slots = {} 
+	local HotbarSlots = {} 
 	local InventoryOpen = false
 
-	local StartSlot, StartParent -- Messy way to deal with this, but it work oki ^-^
+	local StartSlot, StartParent 
 	local Dragging = false
+
+	-- Sub-Category Tracking
+	local SubCategoryCache = {} -- [CacheKey] = true
+	local SubCategoryOrder = 1  -- Global increment for sorting sub-cats
+
+	-- Equipment Tooltip Maids
+	local EquipmentMaids = {}
+	-- Initialize with empty maids
+	for Key, _ in pairs(EquipmentSlots) do
+		EquipmentMaids[Key] = Maid.new()
+	end
 
 	--> Configuration
 	local SlotTextColor = Color3.fromRGB(255, 255, 255)
@@ -79,54 +106,248 @@ return function(Gui)
 	local EquippedSlotColor = GameConfig.PrimaryColor
 	local EquippedSlotTextColor = GameConfig.SecondaryColor
 	local UseArmorBustShot = GameConfig.InventoryUsesArmorBustShot
-	
+
 	local EquippedSlotPosition = -4
-	
+
 	local MAX_HOTBAR_SLOTS = (UserInputService.TouchEnabled and GameConfig.MobileUsesLessSlots and 3) or GameConfig.PCAndConsoleMaxSlots
-	
+
 	--------------------------------------------------------------------------------
-	
+
 	InventoryFrame.BackgroundColor3 = GameConfig.SecondaryColor
-	InventoryList.ScrollBarImageColor3 = GameConfig.PrimaryColor
-	
+
 	Inventory.BackgroundColor3 = GameConfig.BackgroundColor
 	InventoryItems.BackgroundColor3 = GameConfig.BackgroundColor
 	Inventory:WaitForChild("Categories").BackgroundColor3 = GameConfig.BackgroundColor
 
-	type Slot = {
-		ItemInstance: Instance,
-		ItemType: string,
-		ItemConfig: ContentLibrary.ItemConfig?,
-		Frame: Frame,
-		LayoutOrder: number?,
-		HotbarNumber: number?,
-		PushToHotbar: (Slot, HotbarSlot) -> (),
-		PushToInventory: (Slot) -> (),
-		ExchangeWith: (Slot) -> (),
-		Destroy: (Slot) -> ()
-	}
+	--------------------------------------------------------------------------------
+	-- HELPERS
 
-	type HotbarSlot = {
-		Number: number,
-		Frame: Frame,
-		ActiveSlot: Slot?
-	}
+	local function isSlotInHotbar(Slot): boolean
+		return Slot.HotbarNumber ~= nil
+	end
 
-	type ArmorSlot = {
-		Item: Model,
-		ItemConfig: ContentLibrary.ItemConfig,
-		Frame: Frame
-	}
+	local function isSlotInInventory(Slot): boolean
+		return not isSlotInHotbar(Slot)
+	end
+
+	local function GetSlotKey(ItemInstance)
+		if not ItemInstance then return "" end
+		local enchantAttr = typeof(ItemInstance) == "Instance" and ItemInstance:GetAttribute("Enchantments")
+
+		if enchantAttr and enchantAttr ~= "" then
+			-- Split, sort alphabetically (so Flame|Lifesteal is the same as Lifesteal|Flame), and format
+			local encTable = string.split(enchantAttr, ",")
+			table.sort(encTable)
+			return ItemInstance.Name .. "|" .. table.concat(encTable, "|")
+		end
+
+		return ItemInstance.Name
+	end
+
+	--------------------------------------------------------------------------------
+	-- EQUIPMENT LOGIC
+
+	local function UpdateEquipmentSlot(SlotName, ItemName, CategoryName, UnequipCallback)
+		local SlotFrame = EquipmentSlots[SlotName]
+
+		-- Destroy old maid and create a fresh one to clear connections
+		if EquipmentMaids[SlotName] then
+			EquipmentMaids[SlotName]:Destroy()
+		end
+		local SlotMaid = Maid.new()
+		EquipmentMaids[SlotName] = SlotMaid
+
+		local Canvas = SlotFrame:WaitForChild("ItemIconCanvas")
+		local Icon = Canvas:WaitForChild("ItemIcon")
+		local Button = SlotFrame:WaitForChild("SlotButton")
+
+		if ItemName and ItemName ~= "" then
+			-- Safely parse the compound string so we can fetch the image and setup the tooltip
+			local split = string.split(ItemName, "|")
+			local baseName = split[1]
+			local enchants = {}
+			for i = 2, #split do table.insert(enchants, split[i]) end
+
+			local ItemData = ContentLibrary[CategoryName][baseName]
+			if ItemData then
+				Icon.Visible = true
+				-- Ensure item icon is fully opaque when equipped
+				Icon.ImageTransparency = 0 
+
+				if ItemData.Config.IconId then
+					Icon.Image = tonumber(ItemData.Config.IconId) and `rbxassetid://{ItemData.Config.IconId}` or ItemData.Config.IconId
+				else
+					Icon.Image = "" -- Fallback
+				end
+
+				-- Tooltip
+				local MainColor = ColorModule:GetPrimaryColor(ItemData)
+				local Primary, Secondary, _ = ColorModule:ConvertToHSV3(MainColor)
+
+				-- Forge a mock instance and stamp the enchantments so the tooltip reads them properly
+				local MockInstance = ItemData.Instance:Clone()
+				if #enchants > 0 then
+					MockInstance:SetAttribute("Enchantments", table.concat(enchants, ","))
+				end
+
+				local TooltipConnections = SetTooltipListener(SlotFrame, MockInstance, Primary, Secondary)
+
+				for _, Conn in TooltipConnections do
+					SlotMaid:Add(Conn)
+				end
+
+				-- Unequip Action
+				SlotMaid:Add(Button.Activated:Connect(function()
+					if UnequipCallback then UnequipCallback() end
+				end))
+			end
+		else
+			-- Slot Empty: Apply Placeholders
+			Icon.Visible = true
+			Icon.ImageTransparency = 0.9
+
+			if CategoryName == "Armor" then
+				Icon.Image = "rbxassetid://138796651411619"
+			elseif CategoryName == "Accessory" then
+				Icon.Image = "rbxassetid://125639651186784"
+			elseif CategoryName == "Orb" then
+				Icon.Image = "rbxassetid://122817610344022"
+			else
+				Icon.Image = ""
+			end
+		end
+	end
+
+	-- Helper to check if an item is currently equipped anywhere
+	local function IsItemEquipped(ItemName)
+		local ActiveArmor = pData:WaitForChild("ActiveArmor")
+		if ActiveArmor.Helmet.Value == ItemName then return true end
+		if ActiveArmor.Pauldron.Value == ItemName then return true end
+		if ActiveArmor.Chestplate.Value == ItemName then return true end
+
+		local EquippedSlots = pData:WaitForChild("EquippedSlots")
+		for _, Slot in EquippedSlots:GetChildren() do
+			if Slot.Value == ItemName then return true end
+		end
+
+		local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
+		for _, Slot in EquippedOrbs:GetChildren() do
+			if Slot.Value == ItemName then return true end
+		end
+
+		return false
+	end
+
+	-- Updates visibility of inventory slots based on equipment status
+	local function UpdateInventorySlotVisibility()
+		for slotKey, Slot in pairs(Slots) do
+			if Slot.ItemType == "Armor" or Slot.ItemType == "Accessory" or Slot.ItemType == "Orb" then
+				-- Strictly use the dictionary slotKey to verify if it's equipped
+				if IsItemEquipped(slotKey) then
+					if not isSlotInHotbar(Slot) then
+						Slot.Frame.Visible = false
+					end
+				else
+					Slot.Frame.Visible = true
+				end
+			end
+		end
+	end
+
+	local function RefreshEquipmentUI()
+		-- 1. Armor Slots
+		local ActiveArmor = pData:WaitForChild("ActiveArmor")
+
+		UpdateEquipmentSlot("Helmet", ActiveArmor.Helmet.Value, "Armor", function()
+			EventModule:InvokeServer("UnequipArmor", ActiveArmor.Helmet.Value)
+		end)
+
+		UpdateEquipmentSlot("Pauldron", ActiveArmor.Pauldron.Value, "Armor", function()
+			EventModule:InvokeServer("UnequipArmor", ActiveArmor.Pauldron.Value)
+		end)
+
+		UpdateEquipmentSlot("Chestplate", ActiveArmor.Chestplate.Value, "Armor", function()
+			EventModule:InvokeServer("UnequipArmor", ActiveArmor.Chestplate.Value)
+		end)
+
+		-- 2. Accessory Slots
+		local EquippedSlotsData = pData:WaitForChild("EquippedSlots")
+
+		UpdateEquipmentSlot("Accessory1", EquippedSlotsData["1"].Value, "Accessory", function()
+			EventModule:InvokeServer("UnequipAccessory", 1) 
+		end)
+
+		UpdateEquipmentSlot("Accessory2", EquippedSlotsData["2"].Value, "Accessory", function()
+			EventModule:InvokeServer("UnequipAccessory", 2)
+		end)
+
+		-- 3. Orb Slots
+		local EquippedOrbsData = pData:WaitForChild("EquippedOrbs")
+
+		UpdateEquipmentSlot("Orb1", EquippedOrbsData["1"].Value, "Orb", function()
+			EventModule:InvokeServer("UnequipOrb", 1)
+		end)
+
+		UpdateEquipmentSlot("Orb2", EquippedOrbsData["2"].Value, "Orb", function()
+			EventModule:InvokeServer("UnequipOrb", 2)
+		end)
+
+		UpdateEquipmentSlot("Orb3", EquippedOrbsData["3"].Value, "Orb", function()
+			EventModule:InvokeServer("UnequipOrb", 3)
+		end)
+
+		UpdateInventorySlotVisibility()
+	end
+
+	-- Connect to data changes to auto-refresh Equipment UI
+	local function MonitorDataForEquipment()
+		local ActiveArmor = pData:WaitForChild("ActiveArmor")
+		ActiveArmor.Helmet.Changed:Connect(RefreshEquipmentUI)
+		ActiveArmor.Pauldron.Changed:Connect(RefreshEquipmentUI)
+		ActiveArmor.Chestplate.Changed:Connect(RefreshEquipmentUI)
+
+		local EquippedSlotsData = pData:WaitForChild("EquippedSlots")
+		EquippedSlotsData["1"].Changed:Connect(RefreshEquipmentUI)
+		EquippedSlotsData["2"].Changed:Connect(RefreshEquipmentUI)
+
+		local EquippedOrbsData = pData:WaitForChild("EquippedOrbs")
+		EquippedOrbsData["1"].Changed:Connect(RefreshEquipmentUI)
+		EquippedOrbsData["2"].Changed:Connect(RefreshEquipmentUI)
+		EquippedOrbsData["3"].Changed:Connect(RefreshEquipmentUI)
+	end
+	task.spawn(MonitorDataForEquipment)
+
+	-- Toggle Equipment UI
+	EquipmentButton.Activated:Connect(function()
+		EquipmentFrame.Visible = not EquipmentFrame.Visible
+		if EquipmentFrame.Visible then
+			RefreshEquipmentUI()
+		end
+	end)
+
+	EquipmentExitButton.Activated:Connect(function()
+		EquipmentFrame.Visible = false
+	end)
+
+	EquipmentFrame.Visible = false -- Start hidden
+
+	-- Toggle Equipment UI with 'T'
+	ContextActionService:BindAction("ToggleEquipment", function(_, State)
+		if State == Enum.UserInputState.Begin then
+			EquipmentFrame.Visible = not EquipmentFrame.Visible
+			if EquipmentFrame.Visible then
+				RefreshEquipmentUI()
+			end
+		end
+	end, false, Enum.KeyCode.T)
 
 	--------------------------------------------------------------------------------
 
 	-- Checks to see if there's a slot over the cursor. If there is, return the slot type, as well as the slot object.
-	-- SlotType can be either "Hotbar", "Inventory", or nil
-	-- Slot is the slot object, either a HotbarSlot or a Slot object.
-	local function GetSlotOverCursor(): (("Hotbar" | "Inventory")?, Slot?)
+	local function GetSlotOverCursor()
 		local MouseLocation = UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
 		local GuiObjects = Player.PlayerGui:GetGuiObjectsAtPosition(MouseLocation.X, MouseLocation.Y)
-		
+
 		local SlotType, FoundSlot
 		for _, GuiObject in GuiObjects do
 			if StartSlot and GuiObject == StartSlot.Frame then
@@ -146,7 +367,7 @@ return function(Gui)
 				FoundSlot = HotbarSlots[HotbarNumber]
 			end
 		end
-		
+
 		if FoundSlot and FoundSlot.ItemInstance 
 			and GameConfig.Categories[FoundSlot.ItemType].NotEquippable 
 		then
@@ -157,16 +378,16 @@ return function(Gui)
 	end
 
 	-- Returns the firstmost available HotbarSlot
-	local function GetNextHotbarSlot(): HotbarSlot?
+	local function GetNextHotbarSlot()
 		local Slot
-		
+
 		for _, HotbarSlot in HotbarSlots do
 			if not HotbarSlot.ActiveSlot then
 				Slot = HotbarSlot
 				break
 			end
 		end
-		
+
 		return Slot
 	end
 
@@ -181,21 +402,13 @@ return function(Gui)
 		return withinX and withinY
 	end
 
-	local function isSlotInHotbar(Slot: Slot): boolean
-		return Slot.HotbarNumber ~= nil
-	end
-
-	local function isSlotInInventory(Slot: Slot): boolean
-		return not isSlotInHotbar(Slot)
-	end
-
-	local function UpdateSlotState(Slot: Slot, Equipped: boolean)
+	local function UpdateSlotState(Slot, Equipped: boolean)
 		if not Slot or not Slot.Frame.Parent then
 			return
 		end
 
 		local Character = Player.Character
-		
+
 		local Humanoid = Character and Character:FindFirstChildWhichIsA("Humanoid")
 		if not Humanoid or Humanoid.Health <= 0 or (Slot.ItemInstance:IsA("Tool") and Slot.ItemInstance.Parent ~= Character) then
 			Equipped = false
@@ -207,17 +420,17 @@ return function(Gui)
 		local EquippedSlotColor = ActivateOverride or Slot.Primary
 		local EquippedSlotTextColor = DeactivateOverride or Slot.Background
 		local SlotColor = DeactivateOverride or SlotColor
-		
+
 		Slot.Equipped = Equipped
-		
+
 		local Tween = Tween:Play(Slot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, Equipped and EquippedSlotPosition or 0)})
 		Slot.EquippingTween = Tween
-		
+
 		local isCustomColor = Slot.Custom
 		if isCustomColor then
 			Slot.Custom.Frame.BackgroundColor3 = Equipped and Color3.fromRGB(255, 255, 255) 
 				or Color3.fromRGB(109, 109, 109)
-			
+
 			Slot.Custom.GroupTransparency = Equipped and 0 or 0.2
 		elseif not isCustomColor then
 			if Equipped then
@@ -247,7 +460,7 @@ return function(Gui)
 				Visible = true
 			end
 		end
-		
+
 		for _, Frame in Hotbar:GetChildren() do
 			if string.find(Frame.Name, "FullSlot") and #Frame:GetChildren() == 0 then
 				Frame.Visible = false
@@ -261,13 +474,13 @@ return function(Gui)
 
 	local Slot = {}
 	Slot.__index = Slot
-	
+
 	local CategoryFrames = {}
 	local CategorySlots = {}
-	
+
 	local RecentClosestFrame = nil
 	local ForcedCategoryFocus = {nil, os.clock()}
-	
+
 	local function FindClosestPosition(Frame)
 		local AbsolutePosition = 0
 		for _, NewFrame in CategoryFrames do
@@ -278,7 +491,7 @@ return function(Gui)
 
 		return AbsolutePosition
 	end
-	
+
 	local function OnUpdatedCanvasPosition(Force)
 		local CanvasPositionY = InventoryList.CanvasPosition.Y
 		local CanvasSizeY = InventoryList.AbsoluteSize.Y
@@ -294,7 +507,7 @@ return function(Gui)
 				if Frame.Visible then
 					local AbsolutePosition = FindClosestPosition(Frame)
 					local Difference = math.abs(CanvasPositionY - AbsolutePosition)
-					
+
 					if AbsolutePosition < ClosestPosition and (AbsolutePosition >= CanvasPositionY or Difference < 8) then
 						ClosestPosition = AbsolutePosition
 						ClosestFrame = Frame
@@ -319,13 +532,71 @@ return function(Gui)
 		RecentClosestFrame = isForced and ForcedCategoryFocus[1] 
 			or ClosestFrame
 	end
-	
+
+	local function GetOrCreateSubCategory(MainCategoryFrame, SubCategoryName, IsDefault)
+		local Container = MainCategoryFrame.Items
+
+		local SubFrameName = "Sub_" .. SubCategoryName
+		local SubFrame = Container:FindFirstChild(SubFrameName)
+
+		if not SubFrame then
+			SubFrame = script:WaitForChild("SubCategoryTemplate"):Clone()
+			SubFrame.Name = SubFrameName
+
+			local Header = SubFrame:FindFirstChild("Header")
+
+			if Header then
+				-- Match main category color
+				if MainCategoryFrame:FindFirstChild("Header") then
+					Header.TextColor3 = MainCategoryFrame.Header.TextColor3
+				end
+
+				if IsDefault then
+					Header.Visible = false
+				else
+					Header.Text = SubCategoryName
+					Header.Visible = true
+				end
+			end
+
+			local SubItemsGrid = SubFrame:WaitForChild("Items")
+
+			-- Hide Sub-Category if it has no visible items
+			local function CheckSubVisibility()
+				local count = 0
+				for _, child in SubItemsGrid:GetChildren() do
+					if child:IsA("GuiObject") and child.Visible then
+						count += 1
+					end
+				end
+				SubFrame.Visible = count > 0
+			end
+
+			-- Initial Check
+			CheckSubVisibility()
+
+			-- Connect listeners
+			SubItemsGrid.ChildAdded:Connect(function(Child)
+				if Child:IsA("GuiObject") then
+					Child:GetPropertyChangedSignal("Visible"):Connect(CheckSubVisibility)
+				end
+				CheckSubVisibility()
+			end)
+
+			SubItemsGrid.ChildRemoved:Connect(CheckSubVisibility)
+
+			SubFrame.Parent = Container
+		end
+
+		return SubFrame:WaitForChild("Items") -- Return the grid container
+	end
+
 	local ItemTypes = {}
 	for ItemType, Data in GameConfig.Categories do
 		if not Data.ShowInInventory then
 			continue
 		end
-		
+
 		ItemTypes[ItemType] = {
 			Color = Data.Color,
 			LayoutOrder = Data.LayoutOrder,
@@ -340,32 +611,33 @@ return function(Gui)
 		Frame.Header.TextColor3 = CategoryInfo.Color
 		Frame.Items.BackgroundColor3 = CategoryInfo.Color
 
-		local IconSize = GameConfig.Categories[Name].IconSize
-		if IconSize then
-			Frame.Items.UIGridLayout.CellSize = UDim2.fromOffset(IconSize, IconSize)
+		-- Remove UIGridLayout from Main Category (We use sub-cats now)
+		if Frame.Items:FindFirstChild("UIGridLayout") then
+			Frame.Items.UIGridLayout:Destroy()
 		end
 
 		Frame.LayoutOrder = CategoryInfo.LayoutOrder
 		Frame.Visible = false
 		Frame.Parent = InventoryList
-		
+
 		local function CountVisibleItems()
 			local Visible = 0
-			
-			for _, Frame in Frame.Items:GetChildren() do
-				if Frame:IsA("GuiObject") and Frame.Visible then
+
+			for _, ChildFrame in Frame.Items:GetChildren() do
+				if ChildFrame:IsA("GuiObject") and ChildFrame.Visible then
 					Visible += 1
 				end
 			end
-			
+
 			return Visible
 		end
-	
+
 		Frame.Items.ChildAdded:Connect(function(Child)
-			Child:GetPropertyChangedSignal("Visible"):Connect(function()
-				Frame.Visible = CountVisibleItems() > 0
-			end)
-			
+			if Child:IsA("GuiObject") then
+				Child:GetPropertyChangedSignal("Visible"):Connect(function()
+					Frame.Visible = CountVisibleItems() > 0
+				end)
+			end
 			Frame.Visible = CountVisibleItems() > 0
 		end)
 
@@ -376,31 +648,31 @@ return function(Gui)
 
 			Frame.Visible = CountVisibleItems() > 0
 		end)
-		
+
 		---- Category buttons
-		
+
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(CategoryInfo.Color)
-		
+
 		local CategorySlot = script.CategorySlot:Clone()
 		CategorySlot.LayoutOrder = CategoryInfo.LayoutOrder
 		CategorySlot.Name = Name
 
 		CategorySlot.BackgroundColor3 = Primary
 		CategorySlot.TextColor3 = Secondary
-		
+
 		CategorySlot.Text = string.sub(Name, 0, 1)
 
 		CategorySlot.Activated:Connect(function()
 			local AbsolutePosition = FindClosestPosition(Frame)
-			
+
 			ForcedCategoryFocus = {Frame.Name, os.clock()}
 			OnUpdatedCanvasPosition()
-			
+
 			Tween:Play(InventoryList, {0.5, "Back", "Out"}, {CanvasPosition = Vector2.new(0, AbsolutePosition)})
 		end)
-		
+
 		local CategoryButtons = Inventory:WaitForChild("Categories")
-		
+
 		local function UpdateCategoryFrameVisible()
 			local isVisible = false
 			for _, Frame: GuiObject in CategoryButtons:GetChildren() do
@@ -408,35 +680,35 @@ return function(Gui)
 					isVisible = true
 				end
 			end
-			
+
 			CategoryButtons.Visible = isVisible
 		end
-		
+
 		Frame:GetPropertyChangedSignal("Visible"):Connect(function()
 			CategorySlot.Visible = Frame.Visible
-			
+
 			RecentClosestFrame = nil
 			OnUpdatedCanvasPosition()
 			UpdateCategoryFrameVisible()
 		end)
-		
+
 		CategorySlot.Parent =CategoryButtons
 		CategorySlot.Visible = Frame.Visible
-		
+
 		if CategoryInfo.LayoutOrder <= 1 then
 			RecentClosestFrame = Name
 		end
-		
+
 		CategorySlots[Name] = {Frame = CategorySlot, Primary = Primary, Secondary = Secondary, Background = Background}
 		CategoryFrames[Name] = Frame
 	end
-	
+
 	InventoryList:GetPropertyChangedSignal("CanvasPosition"):Connect(OnUpdatedCanvasPosition)
 	OnUpdatedCanvasPosition(RecentClosestFrame)
 
 	local function UpdateOwnership(Frame, Item)
 		local Copies = CountTotalCopies(Item)
-		
+
 		local Amount = Frame:FindFirstChild("Amount")
 		if Amount then
 			Amount.Text = `x{FormatNumber(Copies, "Suffix")}`
@@ -444,36 +716,104 @@ return function(Gui)
 		end
 	end
 
-	-- ItemInstance represents the physical instance of an object.
-	-- Ex: Tool instance instead of ContentLibrary.Tool class.
-	-- Ex: Model instance instead of pData.Items.Armor value object used for data saving & replication.
 	function Slot.new(ItemInstance: Instance): Slot
+		local SlotKey = GetSlotKey(ItemInstance)
+
 		local ItemConfig = ItemInstance:WaitForChild("ItemConfig", 1) and require((ItemInstance :: any).ItemConfig)
-		
+
 		local ItemType = (ItemConfig and ItemConfig.Type) 
 			or (ItemInstance:IsA("Tool") and "Tool")
-		
+
 		local CategoryInfo = GameConfig.Categories[ItemType]
 		if not CategoryInfo.ShowInInventory or ItemConfig.DontShowInInventory then
 			return
 		end
-		
+
 		local IconId = ItemConfig and ItemConfig.IconId and (tonumber(ItemConfig.IconId) and `rbxassetid://{ItemConfig.IconId}` or ItemConfig.IconId) 
 			or (ItemInstance:IsA("Tool") and ItemInstance.TextureId)
 			or ""
-		
+
 		-- Create slot's Frame
 		local Frame = script:WaitForChild(UseArmorBustShot and ItemType == "Armor" and "ArmorSlotTemplate" or "SlotTemplate"):Clone()
-		local ItemIcon = Frame:FindFirstChild("ItemIcon", true) -- Note: We use a custom template for armor, so it can easily use a bust shot.
+		local ItemIcon = Frame:FindFirstChild("ItemIcon", true)
 		local FrameSize = Hotbar.UIGridLayout.CellSize.Y.Offset
-		
+
 		Frame.Size = UDim2.fromOffset(FrameSize, FrameSize)
 		Frame.Name = ItemInstance.Name
 		Frame.ItemName.Visible = #IconId == 0
 		Frame.HotbarNum.Visible = false
 		Frame.Visible = true
-		Frame.Parent = CategoryFrames[ItemType].Items
-		
+
+		local SubType = nil
+		local IsDefault = false
+
+		if ItemType == "Armor" then
+			SubType = ItemConfig.ArmorType -- e.g. "Helmet", "Pauldron"
+			if not SubType then
+				SubType = "General"
+				IsDefault = true
+			end
+		elseif ItemType == "Orb" then
+			if ItemConfig.Rarity == "Exclusive" then
+				SubType = "Exclusive"
+			elseif ItemConfig.Rarity == "Common" then
+				SubType = "Common"
+			elseif ItemConfig.Rarity == "Uncommon" then
+				SubType = "Uncommon"
+			elseif ItemConfig.Rarity == "Rare" then
+				SubType = "Rare"
+			elseif ItemConfig.Rarity == "Epic" then
+				SubType = "Epic"
+			elseif ItemConfig.Rarity == "Legendary" then
+				SubType = "Legendary"
+			else 
+				SubType = "General"
+				IsDefault = true
+			end
+		elseif ItemType == "Tool" and ItemConfig.WeaponType == "Melee" then
+			-- Check ToolType
+			if ItemConfig.ToolType == "Pickaxe" then
+				SubType = "Pickaxe"
+			elseif ItemConfig.ToolType == "Sickle" then
+				SubType = "Sickle"
+			else
+				SubType = "Sword" -- Default for melee tools
+			end
+		elseif ItemType == "Consumable" and ItemConfig.WeaponType == "Food" then
+			-- Check if potion
+			if ItemConfig.IsPotion then
+				SubType = "Potion"
+			else
+				SubType = "Food"
+			end
+		elseif ItemType == "Material" then
+			SubType = ItemConfig.MaterialType
+			if not SubType then
+				SubType = "General"
+				IsDefault = true
+			end
+		else
+			-- Fallback for other categories (Potions, etc)
+			SubType = "General"
+			IsDefault = true
+		end
+
+		-- Get correct container
+		local TargetGrid = GetOrCreateSubCategory(CategoryFrames[ItemType], SubType, IsDefault)
+
+		-- Handle Sub-Category Sorting Order (Optional, simple increment)
+		local CacheKey = ItemType .. "_" .. SubType
+		if not SubCategoryCache[CacheKey] then
+			SubCategoryCache[CacheKey] = true
+			local SubFrame = TargetGrid.Parent
+			if IsDefault then
+				SubFrame.LayoutOrder = 9999 -- Push defaults to bottom
+			else
+				SubFrame.LayoutOrder = SubCategoryOrder
+				SubCategoryOrder += 1
+			end
+		end
+
 		local Slot = setmetatable({}, Slot)
 		Slot.Button = Frame:WaitForChild("SlotButton") :: TextButton
 		Slot.BG = Frame:WaitForChild("SlotBackground") :: Frame
@@ -485,62 +825,74 @@ return function(Gui)
 		else
 			Frame.ItemName.Text = ItemInstance.Name
 		end
-		
+
 		-- Seasonal items
 		local DeactivateColor, ActivateColor = nil, nil
 		if ItemConfig.CustomBackground then
 			local Custom = Frame:WaitForChild("Custom")
 			Custom.Visible = true
-			
+
 			local Gradient = ReplicatedStorage.Assets.Gradients:FindFirstChild(ItemConfig.CustomBackground)
 			if Gradient then
 				Custom:FindFirstChild("Gradient"):Destroy()
 				Gradient:Clone().Parent = Custom
 			end
-			
+
 			Slot.Custom = Custom
 			Slot.BG.Visible = false
 		elseif ItemConfig.SpecialColor then
 			Frame.Canvas.Visible = true
 			Frame.Canvas.GroupColor3 = ItemConfig.SpecialColor
-		
+			Frame.UIStrokeW.Color = ItemConfig.SpecialColor
+
 			local ActivateColor, _, DeactivateColor = ColorModule:ConvertToHSV3(ItemConfig.SpecialColor)
 			Slot.BG.BackgroundColor3 = DeactivateColor
 			Slot.DeactivateOverride = DeactivateColor
 			Slot.ActivateOverride = ActivateColor
 		end
-		
+
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(CategoryInfo.Color)
-		
+
 		Slot.Primary = Primary
 		Slot.Secondary = Secondary
 		Slot.Background = Background
 
 		-- Copies
 		local InventoryCategory = pData.Items[ItemType] 
-		local InventoryItem = InventoryCategory:WaitForChild(ItemInstance.Name)
-		
-		local ContentItem = ContentLibrary[ItemType][ItemInstance.Name]
-		
+		local InventoryItem = InventoryCategory:WaitForChild(SlotKey, 3)
+
+		if not InventoryItem then
+			if Frame then Frame:Destroy() end
+			return nil
+		end
+
+		-- Parent the frame ONLY after confirming the data exists (Prevents the 3-second Ghost slots)
+		Frame.Parent = TargetGrid
+
 		local UpdateMaid = Maid.new()
-		UpdateOwnership(Frame, ContentItem)
-		
-		UpdateMaid:Add(InventoryCategory.ChildAdded:Connect(function()
-			UpdateOwnership(Frame, ContentItem)
-		end))
-		
-		UpdateMaid:Add(InventoryCategory.ChildRemoved:Connect(function()
-			UpdateOwnership(Frame, ContentItem)
-		end))
+
+		-- Isolate the ownership text to the precise DataStore value to prevent fake Stacking
+		local function UpdateSpecificOwnership()
+			local Copies = 0
+			if InventoryItem and InventoryItem.Parent then
+				Copies = InventoryItem:IsA("NumberValue") and InventoryItem.Value or 1
+			end
+
+			local Amount = Frame:FindFirstChild("Amount")
+			if Amount then
+				Amount.Text = `x{FormatNumber(Copies, "Suffix")}`
+				Amount.Visible = Copies > 1
+			end
+		end
+
+		UpdateSpecificOwnership()
 
 		if InventoryItem:IsA("NumberValue") then
-			InventoryItem.Changed:Connect(function()
-				UpdateOwnership(Frame, ContentItem)
-			end)
+			UpdateMaid:Add(InventoryItem.Changed:Connect(UpdateSpecificOwnership))
 		end
 
 		---- Connections (handled by garbage collector)
-		
+
 		local IsNotEquippable = GameConfig.Categories[ItemType].NotEquippable
 		if IsNotEquippable then
 			Slot.Button.Active = false
@@ -563,7 +915,7 @@ return function(Gui)
 				end
 			end)
 		end
-		
+
 		local PrimaryFrame = Slot.Custom and Slot.Custom.Frame or Slot.BG
 		Slot.Button.MouseEnter:Connect(function()
 			Tween:Play(PrimaryFrame, {0.25, "Circular"}, {Transparency = 0})
@@ -576,7 +928,7 @@ return function(Gui)
 
 		local ReferenceValue = Instance.new("StringValue")
 		ReferenceValue.Name = "SlotIndex"
-		ReferenceValue.Value = ItemInstance.Name
+		ReferenceValue.Value = SlotKey
 		ReferenceValue.Parent = Frame
 
 		CollectionService:AddTag(Frame, "InventorySlot")
@@ -587,8 +939,10 @@ return function(Gui)
 		Slot.ItemConfig = ItemConfig
 		Slot.Frame = Frame
 		Slot.Maid = UpdateMaid
+		Slot.SlotKey = SlotKey
 
-		Slots[ItemInstance.Name] = Slot
+		-- Register slot using the SlotKey we defined at the top
+		Slots[SlotKey] = Slot
 
 		-- Sort new slot
 		if Slot.SortInventory then
@@ -599,13 +953,23 @@ return function(Gui)
 		local pData_Hotbar = pData:WaitForChild("Hotbar")
 		for n, HotbarSlot in HotbarSlots do
 			local DataValue = pData_Hotbar:WaitForChild(n)
-			if DataValue.Value == ItemInstance.Name and not HotbarSlots[n].ActiveSlot then
+			if DataValue.Value == SlotKey and not HotbarSlots[n].ActiveSlot then
 				Slot:PushToHotbar(HotbarSlots[n])
 				break
 			end
 		end
-		
+
 		UpdateSlotState(Slot, false)
+
+		-- Initial visibility check: Hide if currently equipped using SlotKey
+		if Slot.ItemType == "Armor" or Slot.ItemType == "Accessory" or Slot.ItemType == "Orb" then
+			if IsItemEquipped(SlotKey) then
+				-- Only hide if it's NOT in the hotbar
+				if not isSlotInHotbar(Slot) then
+					Slot.Frame.Visible = false
+				end
+			end
+		end
 
 		return Slot
 	end
@@ -629,13 +993,16 @@ return function(Gui)
 		--self.Frame.LayoutOrder = HotbarSlot.Number
 		self.Frame.HotbarNum.Text = HotbarSlot.Number
 		self.Frame.HotbarNum.Visible = true
-		
+
 		local FullSlot = Hotbar:WaitForChild(`FullSlot{HotbarSlot.Number}`)
 		self.Frame.Parent = FullSlot
-		
+
+		-- Ensure frame is visible when pushed to hotbar (fixes disappear bug)
+		self.Frame.Visible = true
+
 		FullSlot.LayoutOrder = HotbarSlot.Number
 		FullSlot.Visible = true
-		
+
 		EventModule:FireServer("HotbarItemChanged", HotbarSlot.Number, self.ItemInstance.Name)
 		UpdateHotbarVisibility()
 	end
@@ -653,13 +1020,40 @@ return function(Gui)
 		self.HotbarNumber = nil
 		self.Frame.LayoutOrder = self.LayoutOrder or 1
 		self.Frame.HotbarNum.Visible = false
-		
-		self.Frame.Parent = CategoryFrames[self.ItemType].Items
-		
+
+		-- Ensure the frame goes back to its sub-category, not just the main category frame
+		local ItemConfig = self.ItemConfig
+		local SubType = nil
+		local IsDefault = false
+
+		if self.ItemType == "Armor" then
+			SubType = ItemConfig.ArmorType
+			if not SubType then SubType = "General"; IsDefault = true end
+		elseif self.ItemType == "Tool" and ItemConfig.WeaponType == "Melee" then
+			if ItemConfig.ToolType == "Pickaxe" then SubType = "Pickaxe"
+			elseif ItemConfig.ToolType == "Sickle" then SubType = "Sickle"
+			else SubType = "Sword" end
+		elseif self.ItemType == "Material" then
+			SubType = ItemConfig.MaterialType
+			if not SubType then SubType = "General"; IsDefault = true end
+		else
+			SubType = "General"; IsDefault = true
+		end
+
+		local TargetGrid = GetOrCreateSubCategory(CategoryFrames[self.ItemType], SubType, IsDefault)
+		self.Frame.Parent = TargetGrid
+
 		if HotbarSlot and HotbarSlot.Number then
 			EventModule:FireServer("HotbarItemChanged", HotbarSlot.Number, "")
 		end
 		UpdateHotbarVisibility()
+
+		-- Re-check visibility logic when returning to inventory using the compound SlotKey
+		if self.ItemType == "Armor" or self.ItemType == "Accessory" or self.ItemType == "Orb" then
+			if IsItemEquipped(GetSlotKey(self.ItemInstance)) then
+				self.Frame.Visible = false
+			end
+		end
 	end
 
 	-- This Slot function exchanges the place its in with another Slot.
@@ -673,7 +1067,7 @@ return function(Gui)
 		if not startInHotbar and not endInHotbar then
 			return
 		end
-		
+
 		Slot:PushToInventory()
 		if EndNumber then
 			self:PushToHotbar(HotbarSlots[EndNumber])
@@ -690,7 +1084,8 @@ return function(Gui)
 		end
 		self.Destroyed = true
 
-		-- This slot is in a hotbar slot. Clear up references & restore the hotbar slot.
+		-- This slot is in a hotbar slot.
+		-- Clear up references & restore the hotbar slot.
 		local HotbarSlot = self.HotbarNumber and HotbarSlots[self.HotbarNumber]
 		if HotbarSlot then
 			HotbarSlot.ActiveSlot = nil
@@ -699,16 +1094,16 @@ return function(Gui)
 		end
 
 		self.Maid:Destroy()
-		self.Frame:Destroy()
-		Slots[self.ItemInstance.Name] = nil
+		if self.Frame then self.Frame:Destroy() end
+
+		-- Use the locked SlotKey to prevent deleting the wrong UI slot
+		local slotKey = self.SlotKey or GetSlotKey(self.ItemInstance)
+		Slots[slotKey] = nil
+
 		self.Frame = nil
 		self.ItemInstance = nil
 	end
 
-	-- Function that groups by Level and Name, sorts both of the groups by their sort method,
-	-- then runs through them in order to have a consistent order.
-	-- Tools are sorted by Level if they have an ItemConfig in them with a numerical Level value
-	-- Tools are sorted by Name if they don't have an ItemConfig (say an imported Apple free model)
 	function Slot.SortInventory()
 		local SortByLevel = {}
 		local SortByName = {}
@@ -733,9 +1128,12 @@ return function(Gui)
 		for _, t in {SortByLevel, SortByName} do
 			for _, Slot in t do
 				Slot.LayoutOrder = ind
-				if not isSlotInHotbar(Slot) then
+
+				-- Ensure Slot.Frame actually exists before trying to index it
+				if Slot.Frame and not isSlotInHotbar(Slot) then
 					Slot.Frame.LayoutOrder = ind
 				end
+
 				ind += 1
 			end
 		end
@@ -755,20 +1153,20 @@ return function(Gui)
 		EmptySlot.HotbarNum.Text = "-".. i .."-"
 		EmptySlot.Parent = Hotbar
 		EmptySlot:SetAttribute("SlotNumber", i)
-		
+
 		local FullSlot = script:WaitForChild("FullSlotTemplate"):Clone()
 		FullSlot.Name = "FullSlot" .. tostring(i)
 		FullSlot.LayoutOrder = i
 		FullSlot.Visible = false
 		FullSlot.Parent = Hotbar
-		
+
 		CollectionService:AddTag(EmptySlot, "FakeHotbarSlot")
 
 		local HotbarSlot = {
 			Number = i,
 			Frame = EmptySlot,
 			FullSlot = FullSlot,
-		} :: HotbarSlot
+		} 
 
 		table.insert(HotbarSlots, HotbarSlot)
 
@@ -778,12 +1176,12 @@ return function(Gui)
 			if UserInputState == Enum.UserInputState.Begin then
 				local ActiveSlot = HotbarSlot.ActiveSlot
 				local Type = ActiveSlot and ItemTypes[ActiveSlot.ItemType]
-				
+
 				if Type and not GameConfig.Categories[ActiveSlot.ItemType].NotEquippable then
 					Type:OnActivated(ActiveSlot)
 				end
 			end
-		end, false, 100, KeyCode)
+		end, false, 300, KeyCode)
 
 		-- React to server-sided hotbar changes (primarily for setting slot 1 to the starter sword if it's empty)
 		pData:WaitForChild("Hotbar")[i].Changed:Connect(function()
@@ -825,28 +1223,28 @@ return function(Gui)
 
 				if IsInputDown then
 					StartSlot = Slot
-					
-					StartParent = Slot.Frame.Parent
-					
+
+					StartParent = Slot.Frame.Parent -- error here
+
 					if StartParent.Parent == Hotbar then
 						StartParent.Visible = false
 					end
-					
+
 					Dragging = true
 
 					Slot.Active = false
-					
+
 					if Slot.EquippingTween then
 						Slot.EquippingTween:Cancel()
 					end
-					
+
 					local function UpdatePreRender()
 						local MouseLocation = UserInputService:GetMouseLocation()
 						if Slot.Frame then
 							Slot.Frame.Position = UDim2.fromOffset(MouseLocation.X - 32, MouseLocation.Y - 32)
 						end
 					end
-					
+
 					CursorStick = RunService.PreRender:Connect(UpdatePreRender)
 					UpdatePreRender()
 
@@ -880,18 +1278,18 @@ return function(Gui)
 			if StartSlot then
 				StartSlot.Active = false
 				StartSlot.Frame.Parent = StartParent
-				
+
 				if Slot then
 					Slot.Frame.Position = UDim2.fromScale(0, 0)
 				end
-				
+
 				StartSlot.Frame.Position = UDim2.fromScale(0, 0)
 				if StartSlot.Equipped then
 					Tween:Play(StartSlot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, -4)})
 				end
-				
+
 				StartParent.Visible = true
-				
+
 				if StartSlot.HotbarNumber then
 					HotbarSlots[StartSlot.HotbarNumber].Frame.Visible = false
 				end
@@ -916,15 +1314,14 @@ return function(Gui)
 	-- Code here manages slot creation and removal for each item type
 
 	---- Tool
-	
+
 	local StartTimer = os.clock()
-	BackpackItemAdded.Event:Connect(function(BackpackItem: BackpackItem)
+	BackpackItemAdded.Event:Connect(function(BackpackItem)
 		task.defer(function()
-			if not Slots[BackpackItem.Name] then
+			if not Slots[GetSlotKey(BackpackItem)] then
 				local Slot = Slot.new(BackpackItem)
 
-				-- Code here lets new tools (say ones bought from the shop) appear in the leftmost available hotbar slot
-				if (os.clock() - StartTimer) > 3 then -- Give time for replication to load in initial backpack instances
+				if Slot and (os.clock() - StartTimer) > 3 then 
 					local HotbarSlot = GetNextHotbarSlot()
 					if HotbarSlot and not Slot.HotbarNumber then
 						Slot:PushToHotbar(HotbarSlot)
@@ -934,16 +1331,17 @@ return function(Gui)
 		end)
 	end)
 
-	BackpackItemRemoved.Event:Connect(function(BackpackItem: BackpackItem)
+	BackpackItemRemoved.Event:Connect(function(BackpackItem)
 		if BackpackItem.Parent ~= Player.Character then
-			local Slot = Slots[BackpackItem.Name]
-			if not Slot then
-				return
-			end
-			
+			local SlotKey = GetSlotKey(BackpackItem)
+			local Slot = Slots[SlotKey]
+			if not Slot then return end
+
 			task.defer(function()
-				local Copies = 	CountTotalCopies({Name = BackpackItem.Name})
-				if Slot and Copies == 0 then
+				local StatObj = pData.Items[Slot.ItemType] and pData.Items[Slot.ItemType]:FindFirstChild(SlotKey)
+				local countVal = StatObj and StatObj.Value or 0
+
+				if Slot and countVal <= 0 then
 					Slot:Destroy()
 				end
 			end)
@@ -951,68 +1349,110 @@ return function(Gui)
 	end)
 
 	BackpackItemEquipped.Event:Connect(function(Item, OldItem)
-		local Slot = Slots[Item.Name]
+		local Slot = Slots[GetSlotKey(Item)]
 		if Slot then
 			UpdateSlotState(Slot, true)
 		end
 	end)
 	BackpackItemUnequipped.Event:Connect(function(Item)
-		local Slot = Slots[Item.Name]
+		local Slot = Slots[GetSlotKey(Item)]
 		if Slot then
 			UpdateSlotState(Slot, false)
 		end
 	end)
 
 	---- Items
-	
+
 	for _, Category in Items:GetChildren() do
+		-- 1. Initial Load Loop
 		for _, DataValue in Category:GetChildren() do
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			if Slots[Item.Instance.Name] then
+			local splitName = string.split(DataValue.Name, "|")
+			local baseName = splitName[1]
+
+			local Item = ContentLibrary[Category.Name][baseName]
+			if not Item then continue end
+
+			local slotKey = DataValue.Name
+			if Slots[slotKey] then
 				continue
 			end
-			task.spawn(Slot.new, Item.Instance)
+
+			-- Create a clone and apply enchantments so Slot.new can read them
+			local MockInstance = Item.Instance:Clone()
+			if #splitName > 1 then
+				local enchants = {}
+				for i = 2, #splitName do table.insert(enchants, splitName[i]) end
+				MockInstance:SetAttribute("Enchantments", table.concat(enchants, ","))
+			end
+
+			task.spawn(Slot.new, MockInstance)
 		end
 
+		-- 2. Added Item Event
 		Category.ChildAdded:Connect(function(DataValue)
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			if Slots[Item.Instance.Name] then
-				return
+			local splitName = string.split(DataValue.Name, "|")
+			local baseName = splitName[1]
+
+			local Item = ContentLibrary[Category.Name][baseName]
+			if not Item then return end
+
+			local slotKey = DataValue.Name
+			if Slots[slotKey] then return end
+
+			-- Create a clone and apply enchantments
+			local MockInstance = Item.Instance:Clone()
+			if #splitName > 1 then
+				local enchants = {}
+				for i = 2, #splitName do table.insert(enchants, splitName[i]) end
+				MockInstance:SetAttribute("Enchantments", table.concat(enchants, ","))
 			end
-			
-			local newSlot = Slot.new(Item.Instance)
+
+			local newSlot = Slot.new(MockInstance)
 			local CategoryConfig = GameConfig.Categories[Item.Type]
-			
 			local HotbarSlot = GetNextHotbarSlot()
-			if HotbarSlot and not DataValue:GetAttribute("DontSave") and not CategoryConfig.AmountOnly then
-				newSlot:PushToHotbar(HotbarSlot)
+
+			if newSlot and HotbarSlot and not DataValue:GetAttribute("DontSave") and not CategoryConfig.AmountOnly then
+				-- Do not push to hotbar if the item is already equipped (prevents ghost slots when upgrading equipped items)
+				if not IsItemEquipped(slotKey) then
+					newSlot:PushToHotbar(HotbarSlot)
+				end
 			end
 		end)
 
+		-- 3. Removed Item Event
 		Category.ChildRemoved:Connect(function(DataValue)
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			local Slot = Slots[Item.Instance.Name]
+			local slotKey = DataValue.Name
 
-			task.defer(function()
-				local Copies = 	CountTotalCopies(Item)
-				if Slot and (Copies == 0) then
-					Slot:Destroy()
-				end
-			end)
+			-- If the consumed/upgraded item was equipped, forcefully clear it to sync the Server
+			if IsItemEquipped(slotKey) then
+				if Category.Name == "Armor" then EventModule:InvokeServer("UnequipArmor", slotKey) end
+				if Category.Name == "Accessory" then EventModule:InvokeServer("UnequipAccessory", slotKey) end
+				if Category.Name == "Orb" then EventModule:InvokeServer("UnequipOrb", slotKey) end
+
+				-- Manually trigger your refresh function so the Equipment UI instantly clears
+				task.delay(0.1, RefreshEquipmentUI) 
+			end
+
+			local slot = Slots[slotKey]
+			if slot then
+				slot:Destroy()
+			end
 		end)
 	end
-	
+
 	---- Cosmetic & equipment
 
-	local lastActiveArmor = pData:WaitForChild("ActiveArmor").Value
-	local EquippedSlots = pData:WaitForChild("EquippedSlots")
-	local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
-	
+	local activeArmorData = pData:WaitForChild("ActiveArmor")
+	local lastActiveArmor = {} -- Track state for UI updates
+
+	-- Refresh all armor slots initially
+	RefreshEquipmentUI()
+
 	local function UpdateKeybinds(Equipment, Verdict)
 		local Keybinds = Equipment 
 			and Equipment.Config 
 			and Equipment.Config.Keybinds
-		
+
 		if not Keybinds then
 			return
 		end
@@ -1023,86 +1463,103 @@ return function(Gui)
 			})
 		end
 	end
-	
-	local function CheckActiveArmor()
-		local Equipped = pData.ActiveArmor.Value ~= ""
 
-		local ArmorName = (Equipped and pData.ActiveArmor.Value) or lastActiveArmor
-		if ArmorName then
-			UpdateKeybinds(ContentLibrary.Armor[ArmorName], Equipped)
-		end
-		
-		-- Update now active armor, if not empty
-		if pData.ActiveArmor.Value ~= "" then
-			local Item = ContentLibrary.Armor[pData.ActiveArmor.Value]
-			local Slot = Item and Slots[Item.Instance.Name]
-			if Slot then
-				UpdateSlotState(Slot, true)	
+	local function CheckActiveArmor()
+		-- We need to check all 3 slots
+		for _, SlotName in ipairs({"Helmet", "Pauldron", "Chestplate"}) do
+			local CurrentName = activeArmorData[SlotName].Value
+			local Equipped = CurrentName ~= ""
+			local PreviousName = lastActiveArmor[SlotName]
+
+			-- Unequip previous
+			if PreviousName and PreviousName ~= "" and PreviousName ~= CurrentName then
+				local baseName = string.split(PreviousName, "|")[1]
+				local Item = ContentLibrary.Armor[baseName]
+				local Slot = Slots[PreviousName]
+
+				if Slot then 
+					UpdateSlotState(Slot, false) 
+					Slot.Frame.Visible = true
+				end
+				if Item then UpdateKeybinds(Item, false) end
 			end
+
+			-- Equip current
+			if Equipped then
+				local baseName = string.split(CurrentName, "|")[1]
+				local Item = ContentLibrary.Armor[baseName]
+				local Slot = Slots[CurrentName]
+
+				-- If equipping from hotbar, eject it first so it doesn't take up the slot
+				if Slot and isSlotInHotbar(Slot) then Slot:PushToInventory() end
+				if Slot then 
+					UpdateSlotState(Slot, true) 
+					Slot.Frame.Visible = false
+				end
+				if Item then UpdateKeybinds(Item, true) end
+			end
+			lastActiveArmor[SlotName] = CurrentName
 		end
 	end
-	
-	pData.ActiveArmor.Changed:Connect(function()
-		if lastActiveArmor ~= "" then
-			local Item = ContentLibrary.Armor[lastActiveArmor]
-			local Slot = Item and Slots[Item.Instance.Name]
-			if Slot then
-				UpdateSlotState(Slot, false)
-			end
-		end
-		
-		CheckActiveArmor()
-		lastActiveArmor = pData.ActiveArmor.Value
-	end)
 
+	-- Connect to all 3 slots
+	activeArmorData.Helmet.Changed:Connect(CheckActiveArmor)
+	activeArmorData.Pauldron.Changed:Connect(CheckActiveArmor)
+	activeArmorData.Chestplate.Changed:Connect(CheckActiveArmor)
 	task.spawn(CheckActiveArmor)
-	
+
+	local EquippedSlots = pData:WaitForChild("EquippedSlots")
 	for _, Slot in EquippedSlots:GetChildren() do
 		local LastEquipped = Slot.Value
 		if LastEquipped ~= "" then
-			task.defer(UpdateKeybinds, ContentLibrary.Accessory[LastEquipped], true)
+			local baseName = string.split(LastEquipped, "|")[1]
+			task.defer(UpdateKeybinds, ContentLibrary.Accessory[baseName], true)
 		end
-		
+
 		local function OnUpdatedValue()
-			local Equipped = Slot.Value ~= ""
-			
+			local Equipped = Slot.Value ~= "" 
 			local _Slot = (Equipped and Slots[Slot.Value]) or (LastEquipped and Slots[LastEquipped])
 			if _Slot then
-				UpdateKeybinds(ContentLibrary.Accessory[_Slot.ItemInstance.Name], Equipped)
+				if Equipped and isSlotInHotbar(_Slot) then _Slot:PushToInventory() end
+
+				local baseName = string.split(_Slot.ItemInstance.Name, "|")[1]
+				UpdateKeybinds(ContentLibrary.Accessory[baseName], Equipped)
 				UpdateSlotState(_Slot, Equipped)
+				_Slot.Frame.Visible = not Equipped
 			end
-			
 			LastEquipped = Slot.Value
 		end
-		
 		Slot.Changed:Connect(OnUpdatedValue)
 		OnUpdatedValue()
 	end
-	
+
+	local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
 	for _, Slot in EquippedOrbs:GetChildren() do
 		local LastEquipped = Slot.Value
 		if LastEquipped ~= "" then
-			task.defer(UpdateKeybinds, ContentLibrary.Orb[LastEquipped], true)
+			local baseName = string.split(LastEquipped, "|")[1]
+			task.defer(UpdateKeybinds, ContentLibrary.Orb[baseName], true)
 		end
 
 		local function OnUpdatedValue()
-			local Equipped = Slot.Value ~= ""
-
+			local Equipped = Slot.Value ~= "" 
 			local _Slot = (Equipped and Slots[Slot.Value]) or (LastEquipped and Slots[LastEquipped])
 			if _Slot then
-				UpdateKeybinds(ContentLibrary.Orb[_Slot.ItemInstance.Name], Equipped)
-				UpdateSlotState(_Slot, Equipped)
-			end
+				if Equipped and isSlotInHotbar(_Slot) then _Slot:PushToInventory() end
 
+				local baseName = string.split(_Slot.ItemInstance.Name, "|")[1]
+				UpdateKeybinds(ContentLibrary.Orb[baseName], Equipped)
+				UpdateSlotState(_Slot, Equipped)
+				_Slot.Frame.Visible = not Equipped
+			end
 			LastEquipped = Slot.Value
 		end
-
 		Slot.Changed:Connect(OnUpdatedValue)
 		OnUpdatedValue()
 	end
 
 	---- OTHER ---------------------------------------------------------------------
-	
+
 	-- Update hide canvas visibility
 	local function CheckCanvasVisibility()
 		local TotalVisible = 0
@@ -1111,15 +1568,15 @@ return function(Gui)
 				TotalVisible += 1
 			end
 		end
-		
+
 		HideCanvas.Visible = (not InventoryOpen and TotalVisible > 0) or false
 	end
-	
+
 	HideCanvas.ChildRemoved:Connect(CheckCanvasVisibility)
 	HideCanvas.ChildAdded:Connect(CheckCanvasVisibility)
-	
+
 	CheckCanvasVisibility()
-	
+
 	-- Inventory frame toggle
 	local function ToggleInventory(Enabled: boolean?)
 		Enabled = if Enabled ~= nil then Enabled else not Inventory.Visible
@@ -1127,6 +1584,9 @@ return function(Gui)
 
 		TooltipController:Clear()
 		Inventory.Visible = Enabled
+
+		-- Hide Equipment when inventory closes
+		if not Enabled then EquipmentFrame.Visible = false end
 
 		-- Toggle hotbar slots
 		for n, HotbarSlot in HotbarSlots do
@@ -1150,18 +1610,18 @@ return function(Gui)
 			if CursorStick then
 				CursorStick:Disconnect()
 			end
-			
+
 			StartParent.Visible = true
 			StartSlot.Frame.Parent = StartParent
 			StartSlot.Frame.Position = UDim2.fromScale(0, 0)
 			if StartSlot.Equipped then
 				Tween:Play(StartSlot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, -4)})
 			end
-			
+
 			StartSlot = nil
 			StartParent = nil
 		end
-		
+
 		CheckCanvasVisibility()
 		UpdateHotbarVisibility()
 	end
@@ -1169,46 +1629,37 @@ return function(Gui)
 	Main:WaitForChild("ToggleInventory").Activated:Connect(function()
 		ToggleInventory()
 	end)
-	
+
 	local isOldInventory = GameConfig.UseToggleInventoryButton
 	if not isOldInventory and (UserInputService.TouchEnabled or GuiService:IsTenFootInterface() or GameConfig.ShowInventoryBackpackButtonOnPC) then
 		local BackpackTemplate = script.BackpackTemplate:Clone()
-		BackpackTemplate:WaitForChild("ItemIcon").ImageColor3 = EquippedSlotColor
-		
-		BackpackTemplate:WaitForChild("Keybind").TextColor3 = EquippedSlotColor
 		BackpackTemplate.Keybind.Visible = RunService:IsStudio() or (not UserInputService.TouchEnabled and not UserInputService.GamepadEnabled)
-		
+
 		BackpackTemplate.SlotButton.Activated:Connect(function()
 			ToggleInventory()
 		end)
-		
+
 		BackpackTemplate.Parent = Hotbar
 		BackpackTemplate.Visible = true
 	end
-	
+
 	Main.ToggleInventory.Visible = isOldInventory
 
 	local ExitButton = Inventory:WaitForChild("ExitButton")
-	ExitButton.BackgroundColor3 = GameConfig.SecondaryColor
-	ExitButton.TextColor3 = GameConfig.PrimaryColor
-
 	ExitButton.Activated:Connect(function()
 		ToggleInventory(false)
 	end)
 
-	ContextActionService:BindAction("InventoryGui", function(_, UserInputState)
+	ContextActionService:BindActionAtPriority("InventoryGui", function(_, UserInputState)
 		if UserInputState == Enum.UserInputState.Begin then
 			ToggleInventory()
 		end
-	end, false, Enum.KeyCode.Backquote, Enum.KeyCode.E)
+	end, false, 3000, Enum.KeyCode.Backquote, Enum.KeyCode.I)
 
 	ToggleInventory(false)
 
 	-- Search functionality
 	local SearchBox = Inventory:WaitForChild("SearchBox")
-	SearchBox.PlaceholderColor3 = GameConfig.PrimaryColor
-	SearchBox.BackgroundColor3 = GameConfig.SecondaryColor
-
 	SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
 		local Text = SearchBox.Text
 
@@ -1224,32 +1675,32 @@ return function(Gui)
 		end
 	end)
 
-	---- Cooldown UI (Inventory & item tooltip) ------------------------------------------------------------
-	
+	---- Cooldown UI ------------------------------------------------------------
+
 	local CooldownTooltip = Player.PlayerGui:WaitForChild("Tooltip"):WaitForChild("Cooldown")
-	
+
 	local RecentlyActivatedTweens = {}
 	local ActivatedCooldowns = {}
 	local TweenGoal = 0
-	
+
 	local function CancelActivatedTweens()
 		for _, Tween in RecentlyActivatedTweens do
 			Tween:Cancel()
 		end
 		RecentlyActivatedTweens = {}
 	end
-	
+
 	local function StopCooldown()
 		CancelActivatedTweens()
 		TweenGoal = os.clock()
 		CooldownTooltip.Visible = false
 	end
-	
+
 	local function StartCooldown(TotalTime, TimeLeft)
 		for _, Section in CooldownTooltip.Ring:GetChildren() do
 			Section.UIGradient.Rotation = 90
 		end
-		
+
 		local Clock = os.clock()
 		TweenGoal = Clock
 
@@ -1259,40 +1710,40 @@ return function(Gui)
 
 				local NewTween = Tween:Play(Section.UIGradient, {TimeLeft / 4, "Linear"}, {Rotation = -1})
 				table.insert(RecentlyActivatedTweens, NewTween)
-				
+
 				NewTween.Completed:Wait()
-				
+
 				if TweenGoal ~= Clock then
 					break
 				end
 			end
 		end)
-		
+
 		task.delay(TimeLeft, function()
 			if TweenGoal == Clock then
 				StopCooldown()
 			end
 		end)
-		
+
 		CooldownTooltip.Visible = true
 	end
-	
+
 	local function CheckPlayerTool(Name, Tool)
 		local Character = Player.Character
 		local Tool = Tool or (Character and Character:FindFirstChildWhichIsA("Tool"))
-		
+
 		local isValidTool = Tool and Tool.Name == Name
 		if isValidTool then
 			local TimeLeft = math.max(0, ActivatedCooldowns[Tool.Name][1] - (os.clock() - ActivatedCooldowns[Tool.Name][2]))
 			StartCooldown(ActivatedCooldowns[Tool.Name][1], TimeLeft)
 		end
 	end
-	
-	EventModule:GetOnEvent("PlayerUsedWeapon"):Connect(function(ItemCooldown, Name)
+
+	EventModule:GetOnEvent("PlayerUsedWeapon"):Connect(function(ItemCooldown, ToolOrName)
 		if ItemCooldown < 0.15 then
 			return
 		end
-		
+
 		local function Play(Frame)
 			local Cooldown = Frame.Cooldown
 			Cooldown.BackgroundColor3 = GameConfig.BackgroundColor
@@ -1307,18 +1758,21 @@ return function(Gui)
 				Tween:Play(Cooldown, {0.1, "Linear", "InOut"}, {BackgroundTransparency = 1})
 			end)
 		end
-		
+
+		local TargetKey = (typeof(ToolOrName) == "Instance") and GetSlotKey(ToolOrName) or ToolOrName
+
 		if GameConfig.ShowMouseCooldownUI then
-			ActivatedCooldowns[Name] = {ItemCooldown, os.clock()}
-			CheckPlayerTool(Name)
+			local BaseName = (typeof(ToolOrName) == "Instance") and ToolOrName.Name or ToolOrName
+			ActivatedCooldowns[BaseName] = {ItemCooldown, os.clock()}
+			CheckPlayerTool(BaseName)
 		end
 
-		local Slot = Slots[Name]
+		local Slot = Slots[TargetKey]
 		if Slot then
 			Play(Slot.Frame)
 		end
 	end)
-	
+
 	if GameConfig.ShowMouseCooldownUI then
 		ContextActionService.LocalToolEquipped:Connect(function(Tool)
 			if not ActivatedCooldowns[Tool.Name] then 
@@ -1358,118 +1812,238 @@ return function(Gui)
 		Main.Inventory.ItemLabel.Text = `({FormatNumber(Count, "Commas")} items)`
 	end
 
-	local function OnBackpackAdded(Backpack: Backpack)
-		for _, Slot in Slots do
-			if not GameConfig.Categories[Slot.ItemType].IsATool then
-				continue
-			end
-			Slot:Destroy()
-		end
-
-		local Character = Player.Character or Player.CharacterAdded:Wait()
+	-- Unified Inventory State Tracker (Prevents Death/Reset UI Glitches)
+	local function SetupPlayerInventoryState(Character: Model)
 		local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
+		local Backpack = Player:WaitForChild("Backpack", 5)
+
+		-- Do NOT destroy the tool slots from the previous life
+		-- Destroying them wipes the Hotbar; We just clear their dead physical references so the new tools can seamlessly link to them
+		for _, Slot in pairs(Slots) do
+			if Slot.ItemType and GameConfig.Categories[Slot.ItemType].IsATool then
+				Slot.ItemInstance = nil
+			end
+		end
 
 		EquippedTool = nil
 		StartTimer = os.clock()
 
-		local function ItemAdded(Item: Instance)
-			UpdateItemCount()
-			if Item:IsA("BackpackItem") then
-				if EquippedTool == Item then
-					BackpackItemUnequipped:Fire(Item)
-					EquippedTool = nil
+		if not Backpack then return end
+
+		local function EnsureToolRegistered(Item: Instance)
+			if not Item:IsA("Tool") then return end
+
+			-- If the Server changes the tool's enchantments inline (like setting a Personal Waypoint), 
+			-- this will seamlessly migrate the physical tool to a brand new UI slot
+			if not Item:GetAttribute("EnchantListenerActive") then
+				Item:SetAttribute("EnchantListenerActive", true)
+				local lastSlotKey = GetSlotKey(Item)
+
+				Item:GetAttributeChangedSignal("Enchantments"):Connect(function()
+					local newSlotKey = GetSlotKey(Item)
+					if newSlotKey == lastSlotKey then return end
+
+					local oldSlot = Slots[lastSlotKey]
+					if oldSlot and oldSlot.ItemInstance == Item then
+						local replacement = nil
+						for _, t in ipairs(Backpack:GetChildren()) do
+							if t:IsA("Tool") and t ~= Item and GetSlotKey(t) == lastSlotKey then replacement = t; break end
+						end
+						if not replacement and Character then
+							for _, t in ipairs(Character:GetChildren()) do
+								if t:IsA("Tool") and t ~= Item and GetSlotKey(t) == lastSlotKey then replacement = t; break end
+							end
+						end
+
+						if replacement then
+							oldSlot.ItemInstance = replacement
+
+							UpdateSlotState(oldSlot, false) 
+						else
+							oldSlot:Destroy()
+						end
+					end
+
+					lastSlotKey = newSlotKey
+
+					if not Slots[newSlotKey] then BackpackItemAdded:Fire(Item) else Slots[newSlotKey].ItemInstance = Item end
+					if Item.Parent == Character then BackpackItemEquipped:Fire(Item) end
+				end)
+			end
+
+			-- Match pure physical tools from the server with their enchanted data strings
+			local ItemConfigObj = Item:FindFirstChild("ItemConfig")
+			local ItemType = ItemConfigObj and require(ItemConfigObj).Type or "Tool"
+
+			if ItemType and pData.Items:FindFirstChild(ItemType) then
+				local enchantAttr = Item:GetAttribute("Enchantments")
+				if not enchantAttr or enchantAttr == "" then
+
+					-- Stop blank scrolls from stealing named scroll identities
+					local matchedBlank = false
+					local exactDataItem = pData.Items[ItemType]:FindFirstChild(Item.Name)
+
+					if exactDataItem then
+						local ownedCount = exactDataItem:IsA("NumberValue") and exactDataItem.Value or (exactDataItem:IsA("IntValue") and exactDataItem.Value or 1)
+						local currentPhysicalCount = 0
+
+						for _, t in ipairs(Character:GetChildren()) do
+							if t:IsA("Tool") and GetSlotKey(t) == Item.Name then currentPhysicalCount += 1 end
+						end
+						for _, t in ipairs(Backpack:GetChildren()) do
+							if t:IsA("Tool") and GetSlotKey(t) == Item.Name then currentPhysicalCount += 1 end
+						end
+
+						if currentPhysicalCount <= ownedCount then
+							matchedBlank = true
+						end
+					end
+
+					-- Only check for enchanted identities if no blank identity was available
+					if not matchedBlank then
+						for _, dataItem in ipairs(pData.Items[ItemType]:GetChildren()) do
+							local splitName = string.split(dataItem.Name, "|")
+							local baseName = splitName[1]
+
+							if baseName == Item.Name and #splitName > 1 then
+								local slotKey = dataItem.Name
+
+								local ownedCount = dataItem:IsA("NumberValue") and dataItem.Value or (dataItem:IsA("IntValue") and dataItem.Value or 1)
+								local currentPhysicalCount = 0
+
+								for _, t in ipairs(Character:GetChildren()) do
+									if t:IsA("Tool") and GetSlotKey(t) == slotKey then currentPhysicalCount += 1 end
+								end
+								for _, t in ipairs(Backpack:GetChildren()) do
+									if t:IsA("Tool") and GetSlotKey(t) == slotKey then currentPhysicalCount += 1 end
+								end
+
+								-- Rely purely on physical counts. Do not use 'existingSlot', 
+								-- as UI rendering delays will cause false-positive identity theft
+								if currentPhysicalCount < ownedCount then
+									local enchants = {}
+									for i = 2, #splitName do table.insert(enchants, splitName[i]) end
+									Item:SetAttribute("Enchantments", table.concat(enchants, ","))
+									break
+								end
+							end
+						end
+					end
 				end
+			end
+
+			UpdateItemCount()
+			local SlotKey = GetSlotKey(Item)
+			local Slot = Slots[SlotKey]
+			if not Slot then
 				BackpackItemAdded:Fire(Item)
-			end
-		end
-		local function ItemRemoved(Item: Instance)
-			if Humanoid.Health <= 0 then
-				return
-			end
-			UpdateItemCount()
-			if Item:IsA("BackpackItem") then
-				if EquippedTool ~= Item then
-					BackpackItemEquipped:Fire(Item)
-					EquippedTool = Item
+			else
+				if Slot.ItemInstance ~= Item then
+					Slot.ItemInstance = Item
 				end
-				BackpackItemRemoved:Fire(Item)
 			end
 		end
 
-		-- Resume after
-		task.defer(function()
-			Backpack = Player:WaitForChild("Backpack")
-
-			local Added = Backpack.ChildAdded:Connect(ItemAdded)
-			local Removing = Backpack.ChildRemoved:Connect(ItemRemoved)
-			for _, Item in Backpack:GetChildren() do
-				task.spawn(ItemAdded, Item)
+		local function HandleToolEquipped(Item: Instance)
+			if not Item:IsA("Tool") then return end
+			UpdateItemCount()
+			EnsureToolRegistered(Item)
+			if EquippedTool ~= Item then
+				EquippedTool = Item
+				BackpackItemEquipped:Fire(Item)
 			end
+		end
 
-			Backpack.Destroying:Once(function()
-				Added:Disconnect()
-				Removing:Disconnect()
-				for _, Item in Backpack:GetChildren() do
-					ItemRemoved(Item)
+		local function HandleToolUnequipped(Item: Instance)
+			if not Item:IsA("Tool") then return end
+			UpdateItemCount()
+			EnsureToolRegistered(Item)
+			if EquippedTool == Item then
+				EquippedTool = nil
+				BackpackItemUnequipped:Fire(Item)
+			end
+		end
+
+		local function HandleToolRemoved(Item: Instance)
+			if not Item:IsA("Tool") then return end
+			task.defer(function()
+				-- If it's truly gone from both the Backpack and Character, it was destroyed
+				if Item.Parent ~= Backpack and Item.Parent ~= Character then
+					UpdateItemCount()
+					if EquippedTool == Item then EquippedTool = nil end
+
+					-- Do NOT fire BackpackItemRemoved if the player is simply respawning
+					-- If Humanoid is dead, the tools are just being wiped by Roblox's cleanup cycle. We safely ignore it
+					if Humanoid and Humanoid.Health > 0 then
+						BackpackItemRemoved:Fire(Item)
+					end
 				end
 			end)
-		end)
-	end
-
-	Player.ChildAdded:Connect(function(Child)
-		if Child:IsA("Backpack") then
-			OnBackpackAdded(Child)
 		end
-	end)
 
-	local Backpack = Player:FindFirstChildOfClass("Backpack")
-	if Backpack then
-		OnBackpackAdded(Backpack)
-	end
+		-- Initial state evaluation
+		for _, Item in ipairs(Backpack:GetChildren()) do EnsureToolRegistered(Item) end
+		for _, Item in ipairs(Character:GetChildren()) do HandleToolEquipped(Item) end
 
-	-- Character-related clean-up
-	local function OnCharacterAdded(Character: Model)
-		local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
+		-- Live Connections
+		local conns = {}
+		table.insert(conns, Backpack.ChildAdded:Connect(HandleToolUnequipped))
+		table.insert(conns, Backpack.ChildRemoved:Connect(HandleToolRemoved))
+		table.insert(conns, Character.ChildAdded:Connect(HandleToolEquipped))
 
-		local c1; c1 = Humanoid.Died:Once(function()
+		local charRemoved = Character.ChildRemoved:Connect(function(Child)
+			if Child:IsA("Tool") then
+				HandleToolRemoved(Child)
+			else
+				task.defer(function()
+					local SlotKey = GetSlotKey(Child)
+					local Slot = Slots[SlotKey]
+					if not Slot then return end
+
+					if not Child.Parent then
+						-- Explicitly read from PlayerData using the SlotKey so enchanted variants aren't accidentally deleted on death
+						local countVal = pData.Items[Slot.ItemType] and pData.Items[Slot.ItemType]:FindFirstChild(SlotKey)
+						local Count = countVal and countVal.Value or 0
+
+						if Count <= 0 then
+							--  Only destroy the slot if the player is actually alive
+							if Humanoid and Humanoid.Health > 0 then
+								Slot:Destroy()
+							end
+						else
+							UpdateSlotState(Slot, false)
+						end
+					else
+						UpdateSlotState(Slot, false)
+					end
+				end)
+			end
+		end)
+		table.insert(conns, charRemoved)
+
+		local c1 = Humanoid.Died:Once(function()
 			Humanoid:UnequipTools()
 		end)
 
-		local c2; c2 = Character.ChildRemoved:Connect(function(Child)
-			if not Child.Parent then -- Item has likely been sold / removed
-				local Slot = Slots[Child.Name]
-				local Count = CountTotalCopies({Name = Child.Name})
-
-				if Slot and (Count <= 0) then
-					Slot:Destroy()
-				elseif Slot and (Count > 0) then
-					UpdateSlotState(Slot, false)
-				end
-			else
-				local Slot = Slots[Child.Name]
-				UpdateSlotState(Slot, false)
-			end
-		end)
-
 		Player.CharacterRemoving:Once(function()
-			c1:Disconnect()
-			c2:Disconnect()
+			for _, c in ipairs(conns) do c:Disconnect() end
+			if c1 then c1:Disconnect() end
 		end)
 	end
 
-	Player.CharacterAdded:Connect(OnCharacterAdded)
+	Player.CharacterAdded:Connect(SetupPlayerInventoryState)
 	if Player.Character then
-		OnCharacterAdded(Player.Character)
+		task.spawn(SetupPlayerInventoryState, Player.Character)
 	end
 
 	---- INIT ----------------------------------------------------------------------
 	-- Hacky, but someone experienced issues with backpack not being properly set
-	
+
 	while true do
 		pcall(function()
 			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
 		end)
-		
+
 		task.wait(GameConfig.DefaultClientRefresh)
 	end
 end

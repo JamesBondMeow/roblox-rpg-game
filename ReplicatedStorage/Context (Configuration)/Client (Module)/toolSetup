@@ -21,37 +21,57 @@ local Modules = ReplicatedStorage.Modules
 --> Dependencies
 local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
 local KeybindSystem = require(ReplicatedStorage.Modules.Libraries.Keybinds)
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+
+--------------------------------------------------------------------------------
+-- Helper Function for Enchantments
+local function GetToolEnchantmentProps(Tool, TargetFamily)
+	if not Tool then return nil end
+	local enchantAttr = Tool:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return nil end
+
+	local enchants = string.split(enchantAttr, ",")
+	for _, enchantId in ipairs(enchants) do
+		local config = ContentLibrary.Material[enchantId]
+		if not config then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					config = matData
+					break
+				end
+			end
+		end
+		if config and config.Config.EnchantmentData then
+			local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+			if family == TargetFamily then
+				return config.Config.EnchantmentData.Properties
+			end
+		end
+	end
+	return nil
+end
 
 --------------------------------------------------------------------------------
 
 local function ToolAdded(Tool)
 	if not Tool:GetAttribute("LoadedClient") and Tool.Parent ~= nil then
 		Tool:SetAttribute("LoadedClient", true)
-		
+
 		local ItemConfig = Tool:FindFirstChild("ItemConfig") or Tool:WaitForChild("ItemConfig", 1)
 		if not ItemConfig or ItemConfig.Parent == nil then return end
-		
+
 		ItemConfig = ItemConfig and require(ItemConfig)
-		
+
 		local WeaponType = ItemConfig and (ItemConfig.WeaponType or ItemConfig.Type)
 		if not ItemConfig or not WeaponType then return end
-		
+
 		local Keybinds = ItemConfig.Keybinds or {}
-		
+
 		local function LoadModule(Module)
 			local Callback = require(Module)
 			local Thread = task.spawn(Callback, Tool)
-
-			-- Garbagecollect required modules :3
-			local function RequestGarbageCollectThread(Child, Parent)
-				if Parent == nil then
-					task.cancel(Thread)
-				end
-			end
-
-			Tool.AncestryChanged:Connect(RequestGarbageCollectThread)
 		end
-		
+
 		local function FireClientCallback(Name)
 			EventModule:Fire("ClientToClientCallback", Player, Tool.Name, Name, {Tool})
 			EventModule:FireServer("ClientToServerCallback", Tool.Name, Name, {Tool})
@@ -60,7 +80,7 @@ local function ToolAdded(Tool)
 		local NewModule = script:FindFirstChild(WeaponType)
 		if NewModule then
 			local Connection = nil :: RBXScriptConnection
-			
+
 			local function RequestUpdateKeybinds(Verdict)
 				for Key, Data in Keybinds do
 					KeybindSystem:UpdateKeybind(Key, Data[1], Verdict, Data[2], Data[3], Data[4], {
@@ -68,23 +88,51 @@ local function ToolAdded(Tool)
 					})
 				end
 			end
-			
+
 			local function OnUnequipped()
 				if Connection and Connection.Connected then
 					Connection:Disconnect()
 				end
 
+				local appliedBoost = Tool:GetAttribute("CurrentSpeedBoost")
+				if appliedBoost then
+					local Humanoid = Player.Character and Player.Character:FindFirstChild("Humanoid")
+					if Humanoid then 
+						local Attributes = Humanoid:FindFirstChild("Attributes")
+						local WalkSpeedConfig = Attributes and Attributes:FindFirstChild("WalkSpeed")
+						if WalkSpeedConfig then
+							WalkSpeedConfig:SetAttribute("Lightweight", nil)
+						end
+					end
+					Tool:SetAttribute("CurrentSpeedBoost", nil)
+				end
+
 				RequestUpdateKeybinds(false)
 				FireClientCallback("OnUnequipped")
 			end
-			
+
 			local function OnEquipped()
 				Connection = Tool.AncestryChanged:Once(OnUnequipped)
+
+				local lightweightProps = GetToolEnchantmentProps(Tool, "Lightweight")
+				local speedBoost = lightweightProps and (lightweightProps.WalkSpeedBoost or 2) or 0
+
+				if speedBoost > 0 then
+					local Humanoid = Player.Character and Player.Character:FindFirstChild("Humanoid")
+					if Humanoid then
+						local Attributes = Humanoid:FindFirstChild("Attributes")
+						local WalkSpeedConfig = Attributes and Attributes:FindFirstChild("WalkSpeed")
+						if WalkSpeedConfig then
+							WalkSpeedConfig:SetAttribute("Lightweight", speedBoost)
+							Tool:SetAttribute("CurrentSpeedBoost", speedBoost)
+						end
+					end
+				end
 
 				RequestUpdateKeybinds(true)
 				FireClientCallback("OnEquipped")
 			end
-			
+
 			Tool.Equipped:Connect(OnEquipped)
 			Tool.Unequipped:Connect(OnUnequipped)
 
@@ -95,18 +143,33 @@ local function ToolAdded(Tool)
 	end
 end
 
-local function BackpackAdded(Backpack)
+-- Dynamically hook into new Characters when the player respawns
+local function OnCharacterAdded(Character)
+	for _, Tool in ipairs(Character:GetChildren()) do
+		if Tool:IsA("Tool") then
+			task.spawn(ToolAdded, Tool)
+		end
+	end
+end
+
+-- Dynamically hook into new Backpacks when the player respawns
+local function OnBackpackAdded(Backpack)
 	if Backpack:IsA("Backpack") then
-		for _, Tool in Backpack:GetChildren() do
+		for _, Tool in ipairs(Backpack:GetChildren()) do
 			task.spawn(ToolAdded, Tool)
 		end
 		Backpack.ChildAdded:Connect(ToolAdded)
 	end
 end
 
-if Player:FindFirstChild("Backpack") then
-	BackpackAdded(Player.Backpack)
+Player.CharacterAdded:Connect(OnCharacterAdded)
+if Player.Character then
+	task.spawn(OnCharacterAdded, Player.Character)
 end
-Player.ChildAdded:Connect(BackpackAdded)
 
-return {}
+Player.ChildAdded:Connect(OnBackpackAdded)
+if Player:FindFirstChild("Backpack") then
+	task.spawn(OnBackpackAdded, Player.Backpack)
+end
+
+return true

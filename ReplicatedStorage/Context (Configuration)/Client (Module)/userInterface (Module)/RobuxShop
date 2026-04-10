@@ -1,0 +1,500 @@
+--[[
+	RobuxShop
+	
+	Handles all client-side logic for the Robux Shop UI, including displaying
+	gamepasses, special deals, and developer products.
+]]
+
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+--> Player
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+--> Dependencies
+local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
+local SFX = require(ReplicatedStorage.Modules.Shared.SFX)
+local ColorModule = require(ReplicatedStorage.Modules.Shared.Color)
+local ProductLib = require(ReplicatedStorage.Modules.Shared.Product)
+local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
+local CreateNotification = require(ReplicatedStorage.Modules.Client.createNotification)
+local SetCanvasGroupVisibility = require(ReplicatedStorage.Modules.Client.setCanvasGroupVisibility)
+
+local TooltipController = require(ReplicatedStorage.Modules.Client.TooltipController)
+local TooltipFrame = PlayerGui:WaitForChild("Tooltip"):WaitForChild("Frame")
+
+local GameConfig = require(ReplicatedStorage.GameConfig)
+local DeveloperProductsConfig = require(ReplicatedStorage.Config.DeveloperProducts)
+
+--------------------------------------------------------------------------------
+
+return function(Gui)
+	--> References
+	local MainFrame = Gui:WaitForChild("MainFrame")
+	local ExitButton = MainFrame:WaitForChild("Display"):WaitForChild("ExitButton")
+	local InventoryList = MainFrame.Display.Content.ScrollingFrame
+
+	-- Find the button that opens this shop
+	local RobuxShopButton = PlayerGui:WaitForChild("Main"):WaitForChild("BottomRight"):WaitForChild("Bottom"):WaitForChild("Buttons"):WaitForChild("RobuxShop")
+
+	--> Variables
+	local isOpen = false
+	local productInfoCache = {} -- Cache for product info
+	local tooltipColor = Color3.fromRGB(255, 255, 255)
+	
+	-- Countdown tracking
+	local StarterBundleSlot = nil
+	local StarterBundleExpireTime = 0
+	
+	local GAMEPASS_BUNDLE_ID = "3526837746"
+
+	--------------------------------------------------------------------------------
+
+	-- Toggles the visibility of the shop UI
+	local function setShopOpen(open)
+		if isOpen == open then return end
+		isOpen = open
+
+		if open then
+			Gui.Enabled = true
+			SetCanvasGroupVisibility(MainFrame, true)
+			Tween:Play(Gui.Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
+		else
+			TooltipController:Clear()
+			Tween:Play(Gui.Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 1000)}, function()
+				SetCanvasGroupVisibility(MainFrame, false)
+				Gui.Enabled = false
+			end)
+		end
+	end
+
+	RobuxShopButton.Activated:Connect(function() setShopOpen(true) end)
+	ExitButton.Activated:Connect(function() setShopOpen(false) end)
+
+	--------------------------------------------------------------------------------
+	-- SLOT CREATION FUNCTIONS
+	--------------------------------------------------------------------------------
+
+	-- Deal Slot
+	local function createDealSlot(productData, info, layoutOrder)
+		-- Starter Bundle Expiry Check
+		if info.Name == "Starter Bundle" then
+			local firstJoin = Player:GetAttribute("FirstJoinTime") or os.time()
+			local timeSinceJoin = os.time() - firstJoin
+			local twentyFourHours = 24 * 60 * 60
+
+			if timeSinceJoin > twentyFourHours then
+				return nil
+			end
+			StarterBundleExpireTime = firstJoin + twentyFourHours
+		end
+
+		local isGamepassBundle = (info.Name == "Gamepass Bundle")
+
+		local slot = script.SlotTemplate:Clone()
+		slot.Name = tostring(productData.AssetID)
+		slot.LayoutOrder = layoutOrder
+
+		if not info then
+			slot:Destroy()
+			return
+		end
+
+		slot.ItemName.Text = info.Name
+		slot.ItemLevel.Text = "Bundle"
+		slot.ItemCost.Text = "\u{E002}" .. (info.PriceInRobux or "N/A")
+		slot.ItemIcon.Label.Image = "rbxassetid://" .. info.IconImageAssetId
+
+		-- Special Gold styling for Deals
+		slot.BackgroundColor3 = Color3.fromRGB(127, 110, 50)
+		slot.ItemName.TextColor3 = Color3.fromRGB(255, 220, 100)
+		slot.ItemLevel.TextColor3 = Color3.fromRGB(255, 220, 100)
+		slot.ItemCost.TextColor3 = Color3.fromRGB(255, 220, 100)
+		slot.ItemIcon.BackgroundColor3 = Color3.fromRGB(127, 110, 50)
+		slot.Common.Color = ColorSequence.new(Color3.fromRGB(255, 220, 100))
+		slot.Owned.TextLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+		slot.Owned.Icon.ImageColor3 = Color3.fromRGB(255, 220, 100)
+		slot.Owned.BackgroundColor3 = Color3.fromRGB(35, 30, 14)
+
+		local purchaseConnection
+
+		local function updateState()
+			local isOwned = Player:GetAttribute(tostring(productData.AssetID)) == true
+			local ownsAnyGamepass = false
+
+			if isGamepassBundle then
+				for _, p in ipairs(GameConfig.Products) do
+					if p.Type == "Gamepass" and p.AssetID ~= 0 then
+						-- Use ProductLib to check (now syncs with attributes)
+						if ProductLib:PlayerHasGamepass(Player, p.AssetID) then
+							ownsAnyGamepass = true
+							break
+						end
+					end
+				end
+			end
+
+			if isOwned or (isGamepassBundle and ownsAnyGamepass) then
+				slot.Owned.Visible = true
+				slot.AutoButtonColor = false
+				if purchaseConnection then purchaseConnection:Disconnect(); purchaseConnection = nil end
+			else
+				slot.Owned.Visible = false
+				slot.AutoButtonColor = true
+			end
+		end
+
+		updateState()
+
+		-- Listen for changes to ANY gamepass attribute if this is the bundle
+		if isGamepassBundle then
+			for _, p in ipairs(GameConfig.Products) do
+				if p.Type == "Gamepass" and p.AssetID ~= 0 then
+					Player:GetAttributeChangedSignal(tostring(p.AssetID)):Connect(updateState)
+				end
+			end
+		end
+
+		Player:GetAttributeChangedSignal(tostring(productData.AssetID)):Connect(updateState)
+
+		purchaseConnection = slot.Activated:Connect(function()
+			if slot.Owned.Visible == false then
+				MarketplaceService:PromptProductPurchase(Player, productData.AssetID)
+			end
+		end)
+
+		slot.AncestryChanged:Connect(function() if not slot.Parent and purchaseConnection then purchaseConnection:Disconnect() end end)
+
+		-- Deal Tooltip Generation
+		slot.MouseEnter:Connect(function()
+			local lines = {}
+			table.insert(lines, `<b>{info.Name}</b>`)
+			
+			-- Add Timer for Starter Bundle
+			if info.Name == "Starter Bundle" and StarterBundleExpireTime > 0 then
+				local timeLeft = math.max(0, StarterBundleExpireTime - os.time())
+				local hours = math.floor(timeLeft / 3600)
+				local mins = math.floor((timeLeft % 3600) / 60)
+				local secs = (timeLeft % 60)
+				table.insert(lines, `<font color="#FF5555">Ends in: {hours}h {mins}m {secs}s</font>`)
+				
+				if productData.Items and #productData.Items > 0 then
+					table.insert(lines, "<b>Contains:</b>")
+					for _, item in ipairs(productData.Items) do
+						-- Format: {"Type", "Name", Count}
+						local name = item[2]
+						local amount = item[3] or 1
+						table.insert(lines, `- {amount}x {name}`)
+					end
+				end
+			end
+			
+			table.insert(lines, `<font transparency="0">{info.Description:gsub("\r\n", "\n")}</font>`)
+
+			TooltipFrame.GroupColor3 = tooltipColor
+			TooltipFrame.Frame.BackgroundColor3 = Color3.fromRGB(255, 220, 100)
+			TooltipFrame.Frame.UIStrokeW.Color = Color3.fromRGB(255, 220, 100)
+			TooltipController:Set(table.concat(lines, "\n"))
+		end)
+
+		slot.MouseLeave:Connect(function() TooltipController:Clear() end)
+
+		if info.Name == "Starter Bundle" then
+			StarterBundleSlot = slot
+		end
+
+		return slot
+	end
+
+	-- Gamepass Slot
+	local function createGamepassSlot(productData, info, layoutOrder)
+		local slot = script.SlotTemplate:Clone()
+		slot.Name = tostring(productData.AssetID)
+		slot.LayoutOrder = layoutOrder
+
+		if not info then
+			slot:Destroy()
+			return
+		end
+
+		slot.ItemName.Text = info.Name
+		slot.ItemLevel.Text = "Gamepass"
+		slot.ItemCost.Text = "\u{E002}" .. (info.PriceInRobux or "N/A")
+		slot.ItemIcon.Label.Image = "rbxassetid://" .. info.IconImageAssetId
+
+		-- Simple Ownership Check
+		local function updateOwnership()
+			local idStr = tostring(productData.AssetID)
+			-- Check specific ID OR Bundle ID
+			local isOwned = Player:GetAttribute(idStr) == true or Player:GetAttribute(GAMEPASS_BUNDLE_ID) == true
+
+			if isOwned then
+				slot.Owned.Visible = true
+				slot.AutoButtonColor = false
+			else
+				slot.Owned.Visible = false
+				slot.AutoButtonColor = true
+			end
+		end
+
+		updateOwnership()
+
+		-- Listen for changes
+		Player:GetAttributeChangedSignal(tostring(productData.AssetID)):Connect(updateOwnership)
+		Player:GetAttributeChangedSignal(GAMEPASS_BUNDLE_ID):Connect(updateOwnership) 
+
+		slot.Activated:Connect(function()
+			if not slot.Owned.Visible then
+				MarketplaceService:PromptGamePassPurchase(Player, productData.AssetID)
+			end
+		end)
+
+		slot.MouseEnter:Connect(function()
+			local description = info.Description:gsub("\r\n", "\n")
+			local infoString = `<b>{info.Name}</b>\n\n<font transparency="0">{description}</font>`
+			TooltipFrame.GroupColor3 = tooltipColor
+			TooltipFrame.Frame.BackgroundColor3 = Color3.fromRGB(96, 255, 96)
+			TooltipFrame.Frame.UIStrokeW.Color = Color3.fromRGB(96, 255, 96)
+			TooltipController:Set(infoString)
+		end)
+
+		slot.MouseLeave:Connect(function() TooltipController:Clear() end)
+		return slot
+	end
+
+	-- Dev Product Slot
+	local function createDevProductSlot(productId, productData, info, layoutOrder)
+		local slot = script.SlotTemplate:Clone()
+		slot.Name = tostring(productId)
+		slot.LayoutOrder = layoutOrder
+
+		if not info then
+			slot:Destroy()
+			return
+		end
+
+		slot.ItemName.Text = info.Name
+		slot.ItemLevel.Text = "Multi-Purchase"
+		slot.ItemCost.Text = "\u{E002}" .. (info.PriceInRobux or "N/A")
+		slot.ItemIcon.Label.Image = "rbxassetid://" .. info.IconImageAssetId
+
+		slot.Activated:Connect(function()
+			MarketplaceService:PromptProductPurchase(Player, productId)
+		end)
+
+		slot.MouseEnter:Connect(function()
+			local description = "Grants "
+			if productData.RewardType == "Stat" then
+				description ..= FormatNumber(productData.Amount, "Suffix") .. " " .. productData.StatName
+			elseif productData.RewardType == "Item" then
+				description ..= productData.Amount .. " " .. productData.ItemName
+			else
+				description = "A special one-time purchase."
+			end
+
+			local infoString = `<b>{info.Name}</b>\n\n<font transparency="0">{description}</font>`
+			TooltipFrame.GroupColor3 = tooltipColor
+			TooltipFrame.Frame.BackgroundColor3 = Color3.fromRGB(96, 255, 96)
+			TooltipFrame.Frame.UIStrokeW.Color = Color3.fromRGB(96, 255, 96)
+			
+			TooltipController:Set(infoString)
+		end)
+
+		slot.MouseLeave:Connect(function() TooltipController:Clear() end)
+		return slot
+	end
+
+	--------------------------------------------------------------------------------
+	-- SHOP SETUP
+	--------------------------------------------------------------------------------
+
+	local function setupShop()
+		for _, child in ipairs(InventoryList:GetChildren()) do
+			if child:IsA("Frame") then child:Destroy() end
+		end
+
+		local function configureGrid(grid)
+			grid.FillDirection = Enum.FillDirection.Horizontal
+			grid.SortOrder = Enum.SortOrder.LayoutOrder
+			grid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			grid.CellSize = UDim2.new(0.5, -5, 0, 60)
+			grid.CellPadding = UDim2.new(0, 8, 0, 8)
+		end
+
+		-- 1. DEALS CATEGORY (Top)
+		local dealCategory = script.CategoryTemplate:Clone()
+		dealCategory.Name = "Deals"
+		dealCategory.Header.Text = "Limited Deals"
+		dealCategory.Header.TextColor3 = Color3.fromRGB(255, 220, 100)
+		dealCategory.Items.BackgroundColor3 = Color3.fromRGB(255, 220, 100)
+		dealCategory.Items.BorderColor3 = Color3.fromRGB(127, 110, 50)
+		dealCategory.BorderColor3 = Color3.fromRGB(127, 110, 50)
+		dealCategory.LayoutOrder = 1
+		dealCategory.Parent = InventoryList
+		configureGrid(dealCategory.Items:FindFirstChildWhichIsA("UIGridLayout"))
+
+		-- 2. GAMEPASS CATEGORY
+		local gamepassCategory = script.CategoryTemplate:Clone()
+		gamepassCategory.Name = "Gamepasses"
+		gamepassCategory.Header.Text = "Gamepasses"
+		gamepassCategory.LayoutOrder = 2
+		gamepassCategory.Parent = InventoryList
+		configureGrid(gamepassCategory.Items:FindFirstChildWhichIsA("UIGridLayout"))
+
+		-- 3. DEV PRODUCTS CATEGORY
+		local devProductCategory = script.CategoryTemplate:Clone()
+		devProductCategory.Name = "Multi-Purchases"
+		devProductCategory.Header.Text = "Multi-Purchases"
+		devProductCategory.LayoutOrder = 3
+		devProductCategory.Parent = InventoryList
+
+		local devProductItemsFrame = devProductCategory.Items
+		if devProductItemsFrame:FindFirstChildWhichIsA("UILayout") then
+			devProductItemsFrame:FindFirstChildWhichIsA("UILayout"):Destroy()
+		end
+		local subCategoryLayout = Instance.new("UIListLayout")
+		subCategoryLayout.Padding = UDim.new(0, 10)
+		subCategoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		subCategoryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		subCategoryLayout.Parent = devProductItemsFrame
+
+		local function createSubCategory(name, header, order)
+			local subCat = script.CategoryTemplate:Clone()
+			subCat.Name = name
+			subCat.Header.Text = header
+			subCat.LayoutOrder = order
+			subCat.Parent = devProductItemsFrame
+			subCat.Visible = false 
+			configureGrid(subCat.Items:FindFirstChildWhichIsA("UIGridLayout"))
+			return subCat
+		end
+
+		local goldSubCategory = createSubCategory("Gold", "Gold", 1)
+		local soulSubCategory = createSubCategory("SoulFragments", "Soul Fragments", 2)
+		local otherSubCategory = createSubCategory("Other", "Other", 3)
+
+		-- == SORTING LISTS ==
+		local dealList = {}
+		local gamepassList = {}
+
+		-- Fetch Deals and Gamepasses from GameConfig
+		for _, productData in ipairs(GameConfig.Products) do
+			if productData.AssetID ~= 0 then
+				local infoType = (productData.Type == "Deal") and Enum.InfoType.Product or Enum.InfoType.GamePass
+				local success, info = pcall(function()
+					return productInfoCache[productData.AssetID] or MarketplaceService:GetProductInfo(productData.AssetID, infoType)
+				end)
+
+				if success and info then
+					productInfoCache[productData.AssetID] = info
+					local entry = {data = productData, info = info, price = info.PriceInRobux or 9e9}
+
+					if productData.Type == "Deal" then
+						table.insert(dealList, entry)
+					elseif productData.Type == "Gamepass" then
+						table.insert(gamepassList, entry)
+					end
+				else
+					warn("Failed to get info for ID:", productData.AssetID)
+				end
+			end
+		end
+
+		local sortByPrice = function(a, b) return a.price < b.price end
+		table.sort(dealList, sortByPrice)
+		table.sort(gamepassList, sortByPrice)
+
+		-- Populate Deals
+		for i, item in ipairs(dealList) do
+			local slot = createDealSlot(item.data, item.info, i)
+			if slot then slot.Parent = dealCategory.Items end
+		end
+		if #dealList == 0 then dealCategory.Visible = false end
+
+		-- Populate Gamepasses
+		for i, item in ipairs(gamepassList) do
+			local slot = createGamepassSlot(item.data, item.info, i)
+			if slot then slot.Parent = gamepassCategory.Items end
+		end
+
+		-- Populate Dev Products (Standard)
+		local goldList, soulList, otherList = {}, {}, {}
+		for productId, productData in pairs(DeveloperProductsConfig) do
+			local success, info = pcall(function()
+				return productInfoCache[productId] or MarketplaceService:GetProductInfo(productId, Enum.InfoType.Product)
+			end)
+			if success and info then
+				productInfoCache[productId] = info
+				local entry = {id = productId, data = productData, info = info, price = info.PriceInRobux or 9e9}
+				if productData.RewardType == "Stat" and productData.StatName == "Gold" then
+					table.insert(goldList, entry)
+				elseif productData.RewardType == "Item" and productData.ItemName:match("Soul Fragment") then
+					table.insert(soulList, entry)
+				else
+					table.insert(otherList, entry)
+				end
+			end
+		end
+
+		table.sort(goldList, sortByPrice)
+		table.sort(soulList, sortByPrice)
+		table.sort(otherList, sortByPrice)
+
+		for i, item in ipairs(goldList) do
+			local slot = createDevProductSlot(item.id, item.data, item.info, i)
+			if slot then slot.Parent = goldSubCategory.Items; goldSubCategory.Visible = true end
+		end
+		for i, item in ipairs(soulList) do
+			local slot = createDevProductSlot(item.id, item.data, item.info, i)
+			if slot then slot.Parent = soulSubCategory.Items; soulSubCategory.Visible = true end
+		end
+		for i, item in ipairs(otherList) do
+			local slot = createDevProductSlot(item.id, item.data, item.info, i)
+			if slot then slot.Parent = otherSubCategory.Items; otherSubCategory.Visible = true end
+		end
+
+		if #goldList == 0 then goldSubCategory.Visible = false end
+		if #soulList == 0 then soulSubCategory.Visible = false end
+		if #otherList == 0 then otherSubCategory.Visible = false end
+
+		task.wait()
+		InventoryList.CanvasSize = UDim2.fromOffset(0, InventoryList.UIListLayout.AbsoluteContentSize.Y)
+	end
+	
+	MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamepassId, wasPurchased)
+		if player == Player and wasPurchased then
+			CreateNotification("Purchase Successful!", "Gamepass Acquired!", 12900311398)
+			-- Attributes auto-update slots via listener
+		end
+	end)
+
+	MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+		if userId == Player.UserId and wasPurchased then
+			CreateNotification("Purchase Successful!", "Deal Acquired!", 12900311398)
+			-- Attributes auto-update slots via listener
+		end
+	end)
+	
+	-- Live Countdown for Starter Bundle (Updates every second if shop is open)
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			if isOpen and StarterBundleSlot and StarterBundleSlot.Parent and StarterBundleExpireTime > 0 then
+				local timeLeft = StarterBundleExpireTime - os.time()
+				if timeLeft <= 0 then
+					StarterBundleSlot:Destroy()
+					StarterBundleSlot = nil
+				end
+			end
+		end
+	end)
+
+	-- Initial Setup
+	MainFrame.Display.Body.Titlebar.Text = "Exclusive Shop"
+	setupShop()
+	setShopOpen(false) 
+	Gui.Enabled = false
+end

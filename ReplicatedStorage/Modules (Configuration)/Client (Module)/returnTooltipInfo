@@ -10,6 +10,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 --> Dependencies
 local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
 local GameConfig = require(ReplicatedStorage.GameConfig)
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local ColorModule = require(ReplicatedStorage.Modules.Shared.Color)
 
 --------------------------------------------------------------------------------
 
@@ -21,6 +23,32 @@ local function GetLength(t)
 	return v
 end
 
+local function GetItemEnchantmentProps(ItemInstance, TargetFamily)
+	if not ItemInstance then return nil end
+	local enchantAttr = ItemInstance:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return nil end
+
+	local enchants = string.split(enchantAttr, ",")
+	for _, enchantId in ipairs(enchants) do
+		local config = ContentLibrary.Material[enchantId]
+		if not config then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					config = matData
+					break
+				end
+			end
+		end
+		if config and config.Config.EnchantmentData then
+			local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+			if family == TargetFamily then
+				return config.Config.EnchantmentData.Properties
+			end
+		end
+	end
+	return nil
+end
+
 -- Configure the information that the tooltip displays here
 -- Generally, \n means that the string starts ad a new line, ..= adds onto previous string
 -- <xxx> and other richtext markups just modify the string within the case, escaping with </xxx>
@@ -30,7 +58,31 @@ return function(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
 	end
 	
 	if ItemConfig and ItemConfig.Tip then
-		Info ..= `\n"{ItemConfig.Tip}"`
+		local customTip = ItemConfig.Tip
+
+		-- Custom Tip Override for Personal Teleport Scrolls
+		if ItemConfig.Suite and ItemConfig.Suite[1] == "PersonalTeleport" and ItemInstance and typeof(ItemInstance) == "Instance" then
+			local attr = ItemInstance:GetAttribute("Enchantments")
+			if attr and attr ~= "" then
+				local split = string.split(attr, ",")
+				local coordsStr, locName
+
+				for _, str in ipairs(split) do
+					if string.find(str, "_") then
+						coordsStr = string.gsub(str, "_", ", ")
+					else
+						locName = str
+					end
+				end
+
+				if locName and coordsStr then
+					local castTime = ItemConfig.Suite[2] and ItemConfig.Suite[2].CastTime or 1.5
+					customTip = `Teleport to [{locName} | {coordsStr}] after {castTime} seconds (Press 'R' to change location).`
+				end
+			end
+		end
+
+		Info ..= `\n"{customTip}"`
 	end
 	
 	if ItemInstance:IsA("Tool") and ItemInstance.ToolTip ~= "" then
@@ -44,21 +96,52 @@ return function(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
 			Info ..= `\n<b>-{FormatNumber(ItemConfig.ManaCost, "Suffix")}</b> MP`
 		end
 		
+		-- Calculate Enchantment Multipliers
+		local SharpnessProps = GetItemEnchantmentProps(ItemInstance, "Sharpness")
+		local DamageMultiplier = 1 + (SharpnessProps and SharpnessProps.DamagePercent or 0)
+
+		local DavidProps = GetItemEnchantmentProps(ItemInstance, "David")
+		if DavidProps then DamageMultiplier *= (1 + (DavidProps.DamagePercent or 1)) end
+
+		local SlothProps = GetItemEnchantmentProps(ItemInstance, "Sloth")
+		if SlothProps then DamageMultiplier *= (1 + (SlothProps.DamagePercent or 1)) end
+
+		local ParasiteProps = GetItemEnchantmentProps(ItemInstance, "Parasite")
+		if ParasiteProps then DamageMultiplier *= (1 + (ParasiteProps.DamagePercent or 0.50)) end
+
+		local GreedProps = GetItemEnchantmentProps(ItemInstance, "Greed")
+		if GreedProps then DamageMultiplier *= (1 - (GreedProps.DamageReduction or 0.25)) end
+
+		local HasteProps = GetItemEnchantmentProps(ItemInstance, "Haste")
+		local CooldownMultiplier = 1 - (HasteProps and HasteProps.CooldownReduction or 0)
+
 		if ItemConfig.Damage ~= nil then
+			local AverageDamage = 0
+
 			if typeof(ItemConfig.Damage) == "table" then
-				Info ..= `<b>\n{FormatNumber(ItemConfig.Damage[1], "Suffix")}-{FormatNumber(ItemConfig.Damage[2], "Suffix")}</b> Damage`
+				local minDamage = math.round(ItemConfig.Damage[1] * DamageMultiplier)
+				local maxDamage = math.round(ItemConfig.Damage[2] * DamageMultiplier)
+				Info ..= `<b>\n{FormatNumber(minDamage, "Suffix")}-{FormatNumber(maxDamage, "Suffix")}</b> Damage`
+
+				AverageDamage = (minDamage + maxDamage) / 2
 			else
-				Info ..= `<b>\n{FormatNumber(ItemConfig.Damage, "Suffix")}</b> Damage`
+				local flatDamage = math.round(ItemConfig.Damage * DamageMultiplier)
+				Info ..= `<b>\n{FormatNumber(flatDamage, "Suffix")}</b> Damage`
+
+				AverageDamage = flatDamage
 			end
 
-			local AverageDamage = (typeof(ItemConfig.Damage) == "table" and (ItemConfig.Damage[1] + ItemConfig.Damage[2])/2) or ItemConfig.Damage
-			AverageDamage = (ItemConfig.Cooldown and AverageDamage/ItemConfig.Cooldown) or AverageDamage
-			Info ..= ` <font size="12" transparency="0.2">[{FormatNumber(math.round(AverageDamage*10)/10, "Suffix")} DPS]</font>`
+			local ActualCooldown = ItemConfig.Cooldown and (ItemConfig.Cooldown * CooldownMultiplier)
+			local DPS = (ActualCooldown and AverageDamage / ActualCooldown) or AverageDamage
+
+			Info ..= ` <font size="12" transparency="0.2">[{FormatNumber(math.round(DPS * 10) / 10, "Suffix")} DPS]</font>`
 		end
 
-
 		if ItemConfig.Cooldown ~= nil then
-			Info ..= `\n<b>{ItemConfig.Cooldown}s</b> Cooldown`
+			local ActualCooldown = ItemConfig.Cooldown * CooldownMultiplier
+			local DisplayCooldown = math.round(ActualCooldown * 100) / 100
+
+			Info ..= `\n<b>{DisplayCooldown}s</b> Cooldown`
 		end
 
 		if ItemConfig.DefensePenetration ~= nil and ItemConfig.DefensePenetration[1] > 0 then
@@ -87,18 +170,38 @@ return function(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
 	elseif Type == "Armor" then
 		CreateBreakline()
 		
+		-- Fetch Base Stats
+		local finalWalkSpeed = ItemConfig.WalkSpeed or 0
+		local finalJumpPower = ItemConfig.JumpPower or 0
+
+		-- Apply Movement Enchantment Modifiers
+		local FeatherProps = GetItemEnchantmentProps(ItemInstance, "Feather")
+		if FeatherProps then
+			finalJumpPower += (FeatherProps.JumpPowerBoost or 5)
+			finalWalkSpeed -= (FeatherProps.WalkSpeedDecrease or 5)
+		end
+
+		local TorrentProps = GetItemEnchantmentProps(ItemInstance, "Torrent")
+		if TorrentProps then
+			finalWalkSpeed += (TorrentProps.WalkSpeedBoost or 5)
+			finalJumpPower -= (TorrentProps.JumpPowerDecrease or 5)
+		end
+
+		-- Render Tooltip Lines
 		if ItemConfig.Health and ItemConfig.Health ~= 0 then
 			Info ..= `\n<b>+{FormatNumber(ItemConfig.Health, "Suffix")}</b> Health Points`
 		end
-		
-		if ItemConfig.WalkSpeed and ItemConfig.WalkSpeed ~= 0 then
-			Info ..= `\n<b>+{FormatNumber(ItemConfig.WalkSpeed, "Suffix")}</b> WalkSpeed`
+
+		if finalWalkSpeed ~= 0 then
+			local prefix = finalWalkSpeed > 0 and "+" or ""
+			Info ..= `\n<b>{prefix}{FormatNumber(finalWalkSpeed, "Suffix")}</b> WalkSpeed`
 		end
-		
-		if ItemConfig.JumpPower and ItemConfig.JumpPower ~= 0 then
-			Info ..= `\n<b>+{FormatNumber(ItemConfig.JumpPower, "Suffix")}</b> JumpPower`
+
+		if finalJumpPower ~= 0 then
+			local prefix = finalJumpPower > 0 and "+" or ""
+			Info ..= `\n<b>{prefix}{FormatNumber(finalJumpPower, "Suffix")}</b> JumpPower`
 		end
-		
+
 		if ItemConfig.Mana and ItemConfig.Mana ~= 0 then
 			Info ..= `\n<b>+{FormatNumber(ItemConfig.Mana, "Suffix")}</b> Mana Points`
 		end
@@ -160,28 +263,6 @@ return function(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
 			Info ..= `\n<b>Throwable</b>`
 		end
 		
-		-- Potion & food tooltipa
-		if ItemSuite.Duration and not ItemConfig.ManaCost then
-			if ItemSuite.Multiplier then
-				Info ..= `\nGain <b>+{math.round((ItemSuite.Multiplier - 1) * 100)}% {SuiteName}</b> for {ItemSuite.Duration} seconds.`
-			end
-
-			if ItemSuite.Percentage then
-				Info ..= `\nGain <b>+{math.round(ItemSuite.Percentage * 100)}% {SuiteName}</b> for {ItemSuite.Duration} seconds.`
-			end
-
-			if ItemSuite.Addition then
-				Info ..= `\nGain <b>+{FormatNumber(ItemSuite.Addition, "Suffix")} {SuiteName}</b> for {ItemSuite.Duration} seconds.`
-			end
-
-			if ItemSuite.Boost then
-				Info ..= `\nBoost <b>x{FormatNumber(ItemSuite.Boost, "Suffix")} {SuiteName}</b> for {ItemSuite.Duration} seconds.`
-			end
-		end
-
-		if ItemSuite.Health then
-			Info ..= `\nHeals <b>+{FormatNumber(ItemSuite.Health, "Suffix")} Health</b> on usage.`
-		end
 	elseif Type == "Accessory" then
 		CreateBreakline()
 		
@@ -329,5 +410,93 @@ return function(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
 		end
 	end
 	
+	-- Support both physical tools and dummy tables (Armor/Materials)
+	local enchantAttr
+	if typeof(ItemInstance) == "Instance" then
+		enchantAttr = ItemInstance:GetAttribute("Enchantments")
+	elseif typeof(ItemInstance) == "table" and type(ItemInstance.GetAttribute) == "function" then
+		enchantAttr = ItemInstance:GetAttribute("Enchantments")
+	end
+
+	if enchantAttr and enchantAttr ~= "" then
+		local enchants = string.split(enchantAttr, ",")
+
+		for _, enchantId in ipairs(enchants) do
+			local enchantConfig = nil
+
+			-- Safely search for the enchantment config using the ID instead of the Tome Name
+			if ContentLibrary.Material[enchantId] then
+				enchantConfig = ContentLibrary.Material[enchantId].Config
+			else
+				for _, matData in pairs(ContentLibrary.Material) do
+					if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+						enchantConfig = matData.Config
+						break
+					end
+				end
+			end
+
+			if enchantConfig and enchantConfig.EnchantmentData then
+				local eData = enchantConfig.EnchantmentData
+				CreateBreakline()
+				
+				local EnchantColor = Color3.new(1, 1, 1)
+				if enchantConfig.Rarity == "Common" then
+					EnchantColor = Color3.new(0.992157, 0.996078, 0.996078)
+				elseif enchantConfig.Rarity == "Uncommon" then
+					EnchantColor = Color3.new(0.0980392, 0.831373, 0.0980392)
+				elseif enchantConfig.Rarity == "Rare" then
+					EnchantColor = Color3.new(0.117647, 0.65098, 1)
+				elseif enchantConfig.Rarity == "Epic" then
+					EnchantColor = Color3.new(0.784314, 0.27451, 1)
+				elseif enchantConfig.Rarity == "Legendary" then
+					EnchantColor = Color3.new(1, 0.819608, 0.0980392)
+				elseif enchantConfig.Rarity == "Mythic" then
+					EnchantColor = Color3.new(1, 0.443137, 0.0980392)
+				elseif enchantConfig.Rarity == "Relic" then
+					EnchantColor = Color3.new(0.760784, 0.14902, 0.0941176)
+				elseif enchantConfig.Rarity == "Cursed" then
+					EnchantColor = Color3.new(1, 0.0980392, 0.0980392)
+				end
+				-- Apply the preset hex color to the Title
+				Info ..= `\n<font color="#{EnchantColor:ToHex()}"><b>✦ [{eData.DisplayName}]</b></font>`
+
+				-- Apply the exact same preset hex color to the Description
+				local desc = eData.Description or enchantConfig.Tip or "???"
+				Info ..= `\n<font color="#{EnchantColor:ToHex()}"><b>{desc}</b></font>`
+			end
+		end
+	end
+	
+	-- Add Rarity with background-matching color
+	if ItemConfig and ItemConfig.Rarity then
+		CreateBreakline()
+		
+		local RarityColor = Color3.new(1, 1, 1)
+		if ItemConfig.Rarity == "Common" then
+			RarityColor = Color3.new(0.992157, 0.996078, 0.996078)
+		elseif ItemConfig.Rarity == "Uncommon" then
+			RarityColor = Color3.new(0.0980392, 0.831373, 0.0980392)
+		elseif ItemConfig.Rarity == "Rare" then
+			RarityColor = Color3.new(0.117647, 0.65098, 1)
+		elseif ItemConfig.Rarity == "Epic" then
+			RarityColor = Color3.new(0.784314, 0.27451, 1)
+		elseif ItemConfig.Rarity == "Legendary" then
+			RarityColor = Color3.new(1, 0.819608, 0.0980392)
+		elseif ItemConfig.Rarity == "Mythic" then
+			RarityColor = Color3.new(1, 0.443137, 0.0980392)
+		elseif ItemConfig.Rarity == "Relic" then
+			RarityColor = Color3.new(0.760784, 0.14902, 0.0941176)
+		elseif ItemConfig.Rarity == "Cursed" then
+			RarityColor = Color3.new(1, 0.0980392, 0.0980392)
+		elseif ItemConfig.Rarity == "Secret" then
+			RarityColor = Color3.new(0, 0, 0)
+		elseif ItemConfig.Rarity == "Exclusive" then
+			RarityColor = Color3.new(1, 0.737255, 0.909804)
+		end
+		
+		Info ..= `\n<font color="#{RarityColor:ToHex()}"><b>{ItemConfig.Rarity}</b></font>`
+	end
+
 	return Info
 end

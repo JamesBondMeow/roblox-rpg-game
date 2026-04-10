@@ -115,44 +115,72 @@ function LevelDoor.new(Model: Model)
 	if Model:FindFirstChild("Loaded") then
 		return
 	end
-	
+
 	local Configuration = Instance.new("Configuration")
 	Configuration.Name = "Loaded"
 	Configuration.Parent = Model
-	
+
 	local Base = SafeWait(Model, "Base") :: BasePart
 	local Hitbox = SafeWait(Model, "Hitbox") :: BasePart
 	local Config = require(SafeWait(Model, "Config"))
-	
+
 	local self = setmetatable({}, LevelDoor)
 	self.Instance = Model
 	self.Config = Config
 	self.Color = Config.Color or Base.Color
-	
+
 	local Gui = CreateGui(self)
 	Gui.Adornee = Base
 	Gui.Parent = Model
-	
+
+	-- Check if already opened, OR wait for the data to finish loading from the server
+	local OpenedDoors = pData:WaitForChild("OpenedDoors")
+	if OpenedDoors:FindFirstChild(Config.Name) then
+		self:Open(true)
+	else
+		-- If it isn't here yet, listen for when UnloadData populates this folder
+		local loadConn
+		loadConn = OpenedDoors.ChildAdded:Connect(function(Child)
+			if Child.Name == Config.Name then
+				self:Open(true)
+				if loadConn then loadConn:Disconnect() end
+			end
+		end)
+	end
+
 	Hitbox.Touched:Connect(function(HitPart)
 		local plr = Players:GetPlayerFromCharacter(HitPart.Parent)
 		if Player == plr and CanPlayerAccess(Player, self) then
 			self:Open()
 		end
 	end)
-	
+
 	table.insert(LevelDoor.Items, self)
 end
 
-function LevelDoor:Open()
+function LevelDoor:Open(isInstant)
 	if not self.Opened then
 		self.Opened = true
-		
+
+		-- Only tell the server if this was newly opened by walking into it
+		if not isInstant then
+			EventModule:FireServer("OpenLevelDoor", self.Config.Name)
+		end
+
 		for _, Instance in self.Instance:GetDescendants() do
 			if Instance:IsA("BasePart") and Instance.Name ~= "Hitbox" then
-				Tween:Play(Instance, {1, "Circular"}, {Transparency = 1})
+				if isInstant then
+					Instance.Transparency = 1
+				else
+					Tween:Play(Instance, {1, "Circular"}, {Transparency = 1})
+				end
 				Instance.CanCollide = false
 			elseif Instance:IsA("CanvasGroup") then
-				Tween:Play(Instance, {1, "Circular"}, {GroupTransparency = 1})
+				if isInstant then
+					Instance.GroupTransparency = 1
+				else
+					Tween:Play(Instance, {1, "Circular"}, {GroupTransparency = 1})
+				end
 			end
 		end
 	end

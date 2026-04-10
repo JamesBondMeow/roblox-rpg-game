@@ -56,29 +56,39 @@ local function UpdateCharacterOrbit(DeltaTime: number)
 	local Tool = Character:FindFirstChildWhichIsA("Tool")
 	local Humanoid = Character:FindFirstChild("Humanoid") :: Humanoid
 
-	local ItemConfig = Tool and Tool:FindFirstChild("ItemConfig")
-	if not ItemConfig then
-		Humanoid.AutoRotate = true
-		return
+	-- 1. Attempt to get ItemConfig if a tool exists, but do NOT return early if it doesn't.
+	local ItemConfig = nil
+
+	if Tool then
+		local ConfigModule = Tool:FindFirstChild("ItemConfig")
+		if ConfigModule then
+			if Cache[Tool.Name] == nil then
+				Cache[Tool.Name] = require(ConfigModule)
+			end
+			ItemConfig = Cache[Tool.Name]
+		end
 	end
 
-	if Cache[Tool.Name] == nil then
-		Cache[Tool.Name] = require(ItemConfig)
-	end
-	ItemConfig = Cache[Tool.Name]
-	
-	if (ItemConfig and ItemConfig.Damage) and Humanoid and not Humanoid.Sit and not Humanoid.PlatformStand then
+	-- 2. Determine if we should orbit.
+	-- Condition: (No Tool Equipped) OR (Tool is Equipped AND has Damage config)
+	local ShouldOrbit = (not Tool) or (ItemConfig and ItemConfig.Damage)
+
+	if ShouldOrbit and Humanoid and not Humanoid.Sit and not Humanoid.PlatformStand then
 		local Position = GetMouseHit({Character}, true)
+		-- Calculate the LookAt position while keeping the Y level same as RootPart to prevent tilting
 		local Focus = CFrame.new(HumanoidRootPart.Position, Vector3.new(Position.X, HumanoidRootPart.Position.Y, Position.Z))
 
 		local CurrentRotation = HumanoidRootPart.CFrame.Rotation
 		local GoalRotation = Focus.Rotation
+
+		-- Smoothly interpolate rotation
 		local _, Y, _ = CurrentRotation:Lerp(GoalRotation, math.clamp(DeltaTime * 30, 0, 1)):ToOrientation()
 		local X, _, Z = CurrentRotation:ToOrientation()
 
 		Humanoid.AutoRotate = false
 		HumanoidRootPart.CFrame = CFrame.Angles(X, Y, Z) + HumanoidRootPart.Position
 	else
+		-- Allow default Roblox movement rotation if we aren't manually orbiting
 		Humanoid.AutoRotate = true
 	end
 
@@ -86,6 +96,7 @@ local function UpdateCharacterOrbit(DeltaTime: number)
 end
 
 RunService:BindToRenderStep("CharacterOrbit", Enum.RenderPriority.Character.Value + 1, function(DeltaTime: number)
+	-- Only run if the mouse is unlocked (usually meaning the player is in gameplay mode, not menu mode)
 	if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
 		UpdateCharacterOrbit(DeltaTime)
 	else

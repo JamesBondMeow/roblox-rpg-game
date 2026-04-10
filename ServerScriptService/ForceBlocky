@@ -1,0 +1,21 @@
+local Players = game.Players	-- gets the player from game
+
+function PlayerJoined(Player)	-- main function
+	local function RemoveMeshes(Character)	-- secondary funcation
+		local Humanoid = Character:WaitForChild("Humanoid")	-- finds body
+		wait()
+		local CurrentDescription = Humanoid:GetAppliedDescription() 	-- finds body description
+
+		CurrentDescription.Head = 0		-- changes to standard
+		CurrentDescription.Torso = 0
+		CurrentDescription.LeftArm = 0
+		CurrentDescription.RightArm  = 0
+		CurrentDescription.LeftLeg = 0
+		CurrentDescription.RightLeg = 0
+		Humanoid:ApplyDescription(CurrentDescription) 	-- applies values to description
+
+	end
+	Player.CharacterAppearanceLoaded:Connect(RemoveMeshes) -- forces description to values
+end
+
+Players.PlayerAdded:Connect(PlayerJoined) -- runs main function

@@ -1,10 +1,5 @@
 --[[
 	ArmorLib
-	
-	ArmorLib is an item library that houses code that can be ran on the server relating
-	to Armor, such as ArmorLib:Give(Player, Armor (ContentLib.Armor[...])), as well
-	as equipping & unequipping armor, which is primarily ran through remotes fired from the 
-	client's Inventory Gui.
 ]]
 
 --> Services
@@ -34,234 +29,274 @@ local ChangeCd = {}
 
 --------------------------------------------------------------------------------
 
+local function ParseCompoundName(compoundName)
+	local split = string.split(tostring(compoundName), "|")
+	local baseName = split[1]
+	local enchants = {}
+	for i = 2, #split do table.insert(enchants, split[i]) end
+	return baseName, enchants
+end
+
 local function RequestCallback(Model, Name, CallbackType, Parameters)
 	EventModule:Fire("ServerToServerEquipmentCallback", Model, Name, CallbackType, Parameters)
 	EventModule:FireAllClients("ServerToClientEquipmentCallback", Model, Name, CallbackType, Parameters)
 end
 
+local function GetActiveArmorObjects(Player)
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	if not pData then return {} end
+
+	local ActiveArmor = pData:FindFirstChild("ActiveArmor")
+	local Result = {}
+
+	if ActiveArmor then
+		for _, ValueObj in ActiveArmor:GetChildren() do
+			if ValueObj.Value ~= "" then
+				local baseName = ParseCompoundName(ValueObj.Value)
+				Result[ValueObj.Name] = ContentLibrary.Armor[baseName]
+			end
+		end
+	end
+	return Result
+end
+
 function ArmorLib:Give(Player: Player, Armor, DontSave, ShopBought, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
+
 	local isItem = typeof(Armor) == "table" 
-	if not isItem then
-		warn(`Item {Library} --> {tostring(Armor) or "nil"} doesn't exist as a table, try using ContentLibrary.`)
-		return
-	end
-	
+	if not isItem then return end
+
 	if pData then
 		local Found = pData.Items[Library]:FindFirstChild(Armor.Name)
-		
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Library].IsStackable
 		local CanGive = ((not Found) or IsStackable)
-		
 		local CanBuyMultiple = ShopBought == "Force" or (ShopBought and (not Armor.Config.Cost[4]) and IsStackable)
 		if CanGive or CanBuyMultiple then
 			CreateValue(pData, Armor, DontSave, Amount, Library)
 			return true
 		end
-	else
-		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
 	end
 end
 
 function ArmorLib:Trash(Player: Player, Armor, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
 	if pData then
-		RemoveValue(pData, Armor, Amount, Library)
-		
-		if pData.ActiveArmor.Value == Armor.Name then
-			pData.ActiveArmor.Value = ""
-			
-			ArmorLib:UnequipArmor(Player)
+		local armorBeingTrashedName = Armor.Name
+		local ActiveArmor = pData:FindFirstChild("ActiveArmor")
+		local SlotEquippedIn = nil
+
+		for _, Slot in ActiveArmor:GetChildren() do
+			if Slot.Value == armorBeingTrashedName then
+				SlotEquippedIn = Slot.Name
+				break
+			end
 		end
-	else
-		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
+
+		RemoveValue(pData, Armor, Amount, Library)
+
+		if SlotEquippedIn then
+			ArmorLib:UnequipArmor(Player, armorBeingTrashedName, SlotEquippedIn)
+			ActiveArmor[SlotEquippedIn].Value = ""
+		end
 	end
 end
 
-function ArmorLib:ClearStatistics(Statistics)
+function ArmorLib:ClearStatistics(Statistics, SlotName)
 	for _, Statistic in Statistics:GetChildren() do
 		for Name, Value in Statistic:GetAttributes() do
-			if string.find(Name, "Armor") then
+			if string.find(Name, "Armor_" .. SlotName) then
 				Statistic:SetAttribute(Name, nil)
 			end
 		end
 	end
 end
 
-function ArmorLib:ClearBoosts(Boosts)
+function ArmorLib:ClearBoosts(Boosts, SlotName)
 	for _, Boost in GameConfig.ClassBoosts do
 		local Value = Boosts[Boost]
-		Value:SetAttribute("Armor", nil)
-		Value:SetAttribute("ArmorAdditive", nil)
+		Value:SetAttribute("Armor_" .. SlotName, nil)
+		Value:SetAttribute("ArmorAdditive_" .. SlotName, nil)
 	end
 end
 
-function ArmorLib:EquipArmor(Player: Player, Armor)
+function ArmorLib:EquipArmor(Player: Player, Armor, CompoundName: string?)
+	CompoundName = CompoundName or Armor.Name
+	local baseName, enchants = ParseCompoundName(CompoundName)
+
 	local Character = Player.Character
-	
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
 	local Attributes = Humanoid and Humanoid:WaitForChild("Attributes", 1)
 	if not Attributes or Humanoid.Health <= 0 then return end
-	
-	-- Humanoid changes
-	Attributes.Health:SetAttribute("Armor", Armor.Config.Health)
-	Attributes.WalkSpeed:SetAttribute("Armor", Armor.Config.WalkSpeed)
-	Attributes.JumpPower:SetAttribute("Armor", Armor.Config.JumpPower)
-	
-	-- Mana/Data changes
+
+	local SlotName = Armor.Config.ArmorType or "Chestplate"
+	local pData = PlayerData:WaitForChild(Player.UserId)
+	local ActiveSlot = pData.ActiveArmor:FindFirstChild(SlotName)
+	if ActiveSlot.Value ~= "" then
+		ArmorLib:UnequipArmor(Player, ActiveSlot.Value, SlotName)
+	end
+
+	ActiveSlot.Value = CompoundName
+
+	local Suffix = "_" .. SlotName
+
+	local health = Armor.Config.Health or 0
+	local walkSpeed = Armor.Config.WalkSpeed or 0
+	local jumpPower = Armor.Config.JumpPower or 0
+
+	-- Apply Enchantment Passive Stats
+	local MaxHealthConfig = Attributes:FindFirstChild("Health")
+	for _, enchantId in ipairs(enchants) do
+		local eConfig = ContentLibrary.Material[enchantId]
+		if not eConfig then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					eConfig = matData
+					break
+				end
+			end
+		end
+
+		if eConfig and eConfig.Config.EnchantmentData then
+			local props = eConfig.Config.EnchantmentData.Properties or {}
+			local family = eConfig.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+
+			if family == "Torrent" then
+				walkSpeed = walkSpeed + (props.WalkSpeedBoost or 5)
+				jumpPower = jumpPower - (props.JumpPowerDecrease or 5)
+			elseif family == "Feather" then
+				jumpPower = jumpPower + (props.JumpPowerBoost or 5)
+				walkSpeed = walkSpeed - (props.WalkSpeedDecrease or 5)
+			end
+		end
+	end
+
+	Attributes.Health:SetAttribute("Armor" .. Suffix, health > 0 and health or nil)
+	Attributes.WalkSpeed:SetAttribute("Armor" .. Suffix, walkSpeed ~= 0 and walkSpeed or nil)
+	Attributes.JumpPower:SetAttribute("Armor" .. Suffix, jumpPower ~= 0 and jumpPower or nil)
+
 	local Boosts = Humanoid:WaitForChild("Boosts")
-	ArmorLib:ClearBoosts(Boosts)
-	
+	ArmorLib:ClearBoosts(Boosts, SlotName)
+
 	if Armor.Config.Mana then
 		local ManaAttributes = Humanoid:WaitForChild("Mana")
-		ManaAttributes.MaxMana:SetAttribute("Armor", Armor.Config.Mana)
+		ManaAttributes.MaxMana:SetAttribute("Armor" .. Suffix, Armor.Config.Mana)
 	end
-	
+
 	if Armor.Config.DamageClass then
 		local DamageClass = Armor.Config.DamageClass
-		
 		local DamagePoints = Armor.Config.DamagePoints[1]
 		local Additive = Armor.Config.DamagePoints[2]
-		
-		Boosts[DamageClass]:SetAttribute((Additive and "ArmorAdditive") or Additive, DamagePoints)
+
+		Boosts[DamageClass]:SetAttribute((Additive and ("ArmorAdditive" .. Suffix)) or ("Armor" .. Suffix), DamagePoints)
 	end
-	
-	-- Statistics changes
+
 	local Statistics = Humanoid.Statistics
-	ArmorLib:ClearStatistics(Statistics)
-	
+	ArmorLib:ClearStatistics(Statistics, SlotName)
+
 	for _, Attribute in Statistics:GetChildren() do
 		local Value = Armor.Config[Attribute.Name]
-		if not Value then
-			continue
-		end
-		
+		if not Value then continue end
 		local IsAdditive = Value[2]
-		Attribute:SetAttribute((IsAdditive and "ArmorAdditive") or "Armor", Value[1])
+		Attribute:SetAttribute((IsAdditive and ("ArmorAdditive" .. Suffix)) or ("Armor" .. Suffix), Value[1])
 	end
-	
-	-- Morph changes
-	Morph:ApplyOutfit(Player, Armor)
+
+	Morph:ApplyOutfit(Player, Armor, GetActiveArmorObjects(Player))
 	RequestCallback(Armor.Instance, Armor.Name, "OnEquipped", {Player, Armor.Config})
 end
 
-function ArmorLib:UnequipArmor(Player: Player)
+function ArmorLib:UnequipArmor(Player: Player, ArmorName: string, SlotName: string)
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
-	
 	local pData = PlayerData:WaitForChild(Player.UserId)
-	local Armor = ContentLibrary[Library][pData.ActiveArmor.Value]
-	RequestCallback(Armor.Instance, Armor.Name, "OnUnequipped", {Player, Armor.Config})
-	
-	-- Humanoid changes
+
+	if not SlotName then
+		for _, Slot in pData.ActiveArmor:GetChildren() do
+			if Slot.Value == ArmorName then
+				SlotName = Slot.Name
+				break
+			end
+		end
+	end
+	if not SlotName then return end 
+
+	local baseName = ParseCompoundName(ArmorName)
+	local Armor = ContentLibrary[Library][baseName]
+	if Armor then
+		RequestCallback(Armor.Instance, Armor.Name, "OnUnequipped", {Player, Armor.Config})
+	end
+
+	local Suffix = "_" .. SlotName
+
 	local Attributes = Humanoid and Humanoid:FindFirstChild("Attributes")
 	if Attributes then
-		Attributes.Health:SetAttribute("Armor", nil)
-		Attributes.WalkSpeed:SetAttribute("Armor", nil)
-		Attributes.JumpPower:SetAttribute("Armor", nil)
+		Attributes.Health:SetAttribute("Armor"..Suffix, nil)
+		Attributes.WalkSpeed:SetAttribute("Armor"..Suffix, nil)
+		Attributes.JumpPower:SetAttribute("Armor"..Suffix, nil)
 	end
-	
-	-- Boost/mana changes
+
 	local Boosts = Humanoid and Humanoid:FindFirstChild("Boosts")
-	if Boosts then
-		ArmorLib:ClearBoosts(Boosts)
-	end
-	
+	if Boosts then ArmorLib:ClearBoosts(Boosts, SlotName) end
+
 	local ManaAttributes = Humanoid and Humanoid:FindFirstChild("Mana")
-	if ManaAttributes then
-		ManaAttributes.MaxMana:SetAttribute("Armor", nil)
-	end
-	
-	-- Statistics changes
+	if ManaAttributes then ManaAttributes.MaxMana:SetAttribute("Armor"..Suffix, nil) end
+
 	local Statistics = Humanoid and Humanoid:FindFirstChild("Statistics")
-	if Statistics then
-		ArmorLib:ClearStatistics(Statistics)
-	end
-	
-	-- Morph changes
-	Morph:ClearOutfit(Player)
+	if Statistics then ArmorLib:ClearStatistics(Statistics, SlotName) end
+
+	pData.ActiveArmor[SlotName].Value = ""
+	Morph:ClearOutfit(Player, SlotName, GetActiveArmorObjects(Player))
 end
 
 --------------------------------------------------------------------------------
 
 local ArmorContent = {}
-
--- Armor objects
 local function AddArmorToContent(ArmorInstance)
 	local Config = require(ArmorInstance:FindFirstChildWhichIsA("ModuleScript"))
-	
-	if ArmorContent[Config.Name] then
-		warn(`Armor {Config.Name} already exists in ArmorContent, please change its name.`)
-		return
-	end
-	
+	if ArmorContent[Config.Name] then return end
 	ArmorContent[Config.Name] = Config
 end
 
 for _, ArmorInstance in CollectionService:GetTagged("Armor") do
 	task.spawn(AddArmorToContent, ArmorInstance)
 end
-
 CollectionService:GetInstanceAddedSignal("Armor"):Connect(AddArmorToContent)
 
 -- Remotes
-local function RequestUnequipArmor(Player)
+local function RequestUnequipArmor(Player, ArmorName)
 	local pData = PlayerData:WaitForChild(Player.UserId)
-	
-	ArmorLib:UnequipArmor(Player)
-	pData.ActiveArmor.Value = ""
-end
+	local ActiveArmor = pData.ActiveArmor
+	local TargetSlot = nil
 
-local function RequestEquipArmor(Player, ArmorName: string)
-	if typeof(ArmorName) ~= "string" then return end
-	
-	local pData = PlayerData:WaitForChild(Player.UserId)
-	
-	local ArmorValue = pData.Items.Armor:FindFirstChild(ArmorName)
-	local ArmorItem = ContentLibrary.Armor[ArmorName]
-
-	if ArmorValue and ArmorItem and not ChangeCd[Player.UserId] then
-		ChangeCd[Player.UserId] = true
-		task.delay(0.25, function()
-			ChangeCd[Player.UserId] = nil
-		end)
-
-		ArmorLib:EquipArmor(Player, ArmorItem)
-		pData.ActiveArmor.Value = ArmorName
-	end
-end
-
-EventModule:GetOnServerEvent("EquipObjectArmor"):Connect(function(Player, ArmorName: string)
-	if typeof(ArmorName) ~= "string" then return end
-	
-	local ArmorConfig = ArmorContent[ArmorName]
-	local Requirements = ArmorConfig and ArmorConfig.Requirements
-	if not Requirements then return end
-	
-	local pData = PlayerData:WaitForChild(Player.UserId)
-	local Level = pData:WaitForChild("Stats"):WaitForChild("Level")
-	if Requirements.Level and Level.Value < Requirements.Level then
-		return
-	end
-	
-	local ArmorFolder = pData:WaitForChild("Items"):WaitForChild("Armor")
-	if Requirements.DataValue and not ArmorFolder:FindFirstChild(ArmorName) then
-		return
-	end
-	
-	local ArmorItem = ContentLibrary.Armor[ArmorName]
-	if ArmorItem then
-		if not ArmorFolder:FindFirstChild(ArmorName) then
-			ArmorLib:Give(Player, ArmorItem)
+	if ArmorName then
+		for _, Slot in ActiveArmor:GetChildren() do
+			if Slot.Value == ArmorName then
+				TargetSlot = Slot
+				break
+			end
 		end
-
-		RequestEquipArmor(Player, ArmorName)
+	else
+		return
 	end
-end)
 
-EventModule:GetOnServerEvent("UnequipObjectArmor"):Connect(RequestUnequipArmor)
+	if TargetSlot then
+		ArmorLib:UnequipArmor(Player, TargetSlot.Value, TargetSlot.Name)
+	end
+end
+
+local function RequestEquipArmor(Player, ArmorName)
+	local pData = PlayerData:WaitForChild(Player.UserId)
+
+	-- Parse compound string natively
+	local baseName = ParseCompoundName(ArmorName)
+	local Item = ContentLibrary.Armor[baseName]
+
+	if Item and pData.Items.Armor:FindFirstChild(ArmorName) then
+		ArmorLib:EquipArmor(Player, Item, ArmorName)
+		return true
+	end
+	return false
+end
+
 EventModule:GetOnServerInvoke("EquipArmor", RequestEquipArmor)
 EventModule:GetOnServerInvoke("UnequipArmor", RequestUnequipArmor)
 
@@ -269,40 +304,39 @@ EventModule:GetOnServerInvoke("UnequipArmor", RequestUnequipArmor)
 
 local function OnPlayerAdded(Player: Player)
 	local pData = PlayerData:WaitForChild(Player.UserId)
-	
+
 	local function OnCharacterAdded(Character)
-		local ActiveArmor = pData:WaitForChild("ActiveArmor")
-		local Armor = ActiveArmor.Value ~= "" and ContentLibrary.Armor[ActiveArmor.Value]
-		
-		-- Update any incoming accessories (CharacterAppearanceLoaded is really broken lol)
+		local ActiveArmorFolder = pData:WaitForChild("ActiveArmor")
+
 		local Connection = Character.ChildAdded:Connect(function(Child)
 			if Child:IsA("Accessory") then
-				Morph:UpdateAccessoriesTransparency(Character, ActiveArmor.Value ~= "" and ContentLibrary.Armor[ActiveArmor.Value])
+				Morph:UpdateAccessoriesTransparency(Character, nil) 
 			end
 		end)
-		Player.CharacterRemoving:Once(function()
-			Connection:Disconnect()
-		end)
-		
-		if Armor then
-			if Player:HasAppearanceLoaded() then
-				ArmorLib:EquipArmor(Player, Armor)
-			else
-				Player.CharacterAppearanceLoaded:Once(function()
-					ArmorLib:EquipArmor(Player, Armor)
-				end)
+		Player.CharacterRemoving:Once(function() Connection:Disconnect() end)
+
+		for _, Slot in ActiveArmorFolder:GetChildren() do
+			if Slot.Value ~= "" then
+				local baseName = ParseCompoundName(Slot.Value)
+				local Armor = ContentLibrary.Armor[baseName]
+				if Armor then
+					if Player:HasAppearanceLoaded() then
+						ArmorLib:EquipArmor(Player, Armor, Slot.Value)
+					else
+						Player.CharacterAppearanceLoaded:Once(function()
+							ArmorLib:EquipArmor(Player, Armor, Slot.Value)
+						end)
+					end
+				end
 			end
 		end
 	end
-	
+
 	Player.CharacterAdded:Connect(OnCharacterAdded)
-	if Player.Character then
-		OnCharacterAdded(Player.Character)
-	end
+	if Player.Character then OnCharacterAdded(Player.Character) end
 end
 
-for _, Player in Players:GetChildren() do
-	task.defer(OnPlayerAdded, Player)
-end
 Players.PlayerAdded:Connect(OnPlayerAdded)
+for _, Player in Players:GetPlayers() do task.spawn(OnPlayerAdded, Player) end
+
 return ArmorLib

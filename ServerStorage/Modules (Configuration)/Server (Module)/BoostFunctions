@@ -25,29 +25,53 @@ function BoostFunctions:Mana(Player, Type, Value)
 
 	local ManaAttributes = Humanoid:FindFirstChild("Mana")
 	if not ManaAttributes then return end
-	
+
 	ManaAttributes.MaxMana:SetAttribute("ManaPotion", Value)
-	
+
 	local MaxMana = 0
-	for Name, Value in ManaAttributes.MaxMana:GetAttributes() do
-		if Value ~= Value then Value = 0 end
-		MaxMana += Value
+	for Name, AttrValue in ManaAttributes.MaxMana:GetAttributes() do
+		if AttrValue ~= AttrValue then AttrValue = 0 end
+		MaxMana += AttrValue
 	end
-	
+
 	if Value ~= 0 then
 		ManaAttributes.Mana:SetAttribute("Default", MaxMana)
 	end
 end
 
 function BoostFunctions:Health(Player, Type, Value)
+	local Character = Player.Character
+
+	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid
+	local Attributes = Humanoid and Humanoid:WaitForChild("Attributes", 1)
+	if not Attributes or Humanoid.Health <= 0 then return end
+
 	if Type == "Addition" then
-		local Character = Player.Character
-		
-		local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid
-		local Attributes = Humanoid and Humanoid:WaitForChild("Attributes", 1)
-		if not Attributes or Humanoid.Health <= 0 then return end
-		
+		-- Flat health additions
 		Attributes.Health:SetAttribute("Spell", Value)
+
+	elseif Type == "Boost" then
+		-- Percentage health boost (Multiplier)
+		if Value and Value > 0 and Value ~= 1 then
+			local BaseHealth = 100
+
+			-- Calculate Max Health without the potion's current boost
+			for Name, AttrValue in Attributes.Health:GetAttributes() do
+				if Name ~= "PotionMultiplier" then
+					BaseHealth += AttrValue
+				end
+			end
+
+			-- Calculate how much extra flat health the multiplier grants
+			local ExtraHealth = BaseHealth * (Value - 1)
+			Attributes.Health:SetAttribute("PotionMultiplier", math.round(ExtraHealth))
+
+			-- (Optional) Heal the player slightly so the new empty max health doesn't make them look heavily injured
+			Humanoid.Health = math.clamp(Humanoid.Health + ExtraHealth, 0, BaseHealth + ExtraHealth)
+		else
+			-- Remove the boost when the potion expires (Value becomes 0 or 1)
+			Attributes.Health:SetAttribute("PotionMultiplier", nil)
+		end
 	end
 end
 

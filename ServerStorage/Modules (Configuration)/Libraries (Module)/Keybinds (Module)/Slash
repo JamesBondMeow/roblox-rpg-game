@@ -1,0 +1,116 @@
+-- [SERVER]
+local Debris = game:GetService("Debris")
+local ServerStorage = game:GetService("ServerStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DamageLib = require(ServerStorage.Modules.Libraries.Damage)
+local MobList = require(ServerStorage.Modules.Libraries.Mob.MobList)
+
+local Keybind = {}
+
+local MANA_COST = 25
+local SLASH_SPEED = 30
+local SLASH_DURATION = 0.75
+local SLASH_SIZE = Vector3.new(15, 1, 15)
+
+-- Validation check for the Keybind System
+function Keybind:Validate(Player)
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChild("Humanoid")
+	local ManaFolder = Humanoid and Humanoid:FindFirstChild("Mana")
+	local ManaStat = ManaFolder and ManaFolder.Mana
+
+	if not ManaStat or ManaStat:GetAttribute("Default") < MANA_COST then
+		return false
+	end
+
+	return true
+end
+
+function Keybind:OnActivated(Player)
+	if not self:Validate(Player) then return end
+
+	local Character = Player.Character
+	local Root = Character:FindFirstChild("HumanoidRootPart")
+	local Humanoid = Character:FindFirstChild("Humanoid")
+
+	-- Deduct Mana
+	local ManaStat = Humanoid.Mana.Mana
+	ManaStat:SetAttribute("Default", ManaStat:GetAttribute("Default") - MANA_COST)
+
+	-- Tool & Damage Setup
+	local Tool = Character:FindFirstChildWhichIsA("Tool")
+	local ItemConfig = require(Tool.ItemConfig)
+	local BaseDamage = ItemConfig.Damage
+	if type(BaseDamage) == "table" then
+		BaseDamage = math.random(BaseDamage[1], BaseDamage[2])
+	end
+	local SlashDamage = math.round(BaseDamage * 2)
+
+	-- Create Slash VFX Part
+	local SlashPart = Instance.new("Part")
+	SlashPart.Name = "SlashVFX"
+	SlashPart.Size = SLASH_SIZE
+	SlashPart.Transparency = 1
+	SlashPart.CanCollide = false
+	SlashPart.Anchored = true
+	SlashPart.CFrame = (Root.CFrame * CFrame.new(0, 0, -3)) * CFrame.Angles(0, math.rad(180), 0)
+	SlashPart.Parent = workspace.Temporary
+
+	-- VFX Handling
+	local EffectFolder = ReplicatedStorage.Assets.Effects:FindFirstChild("SwordSlash")
+	if EffectFolder then
+		local AttachmentTemplate = EffectFolder:FindFirstChildWhichIsA("Attachment")
+
+		if AttachmentTemplate then
+			-- Clone the entire attachment (including all particle emitters inside it)
+			local ClonedAttachment = AttachmentTemplate:Clone()
+			ClonedAttachment.Parent = SlashPart
+
+			-- Iterate through the emitters INSIDE the cloned attachment
+			for _, vfx in ipairs(ClonedAttachment:GetChildren()) do
+				if vfx:IsA("ParticleEmitter") then 
+					vfx:Emit(vfx:GetAttribute("EmitCount") or 20) 
+				end
+			end
+		end
+	end
+
+	-- Movement and Damage Logic
+	local HitMobs = {}
+	local StartTime = os.clock()
+
+	task.spawn(function()
+		while os.clock() - StartTime < SLASH_DURATION do
+			local dt = RunService.Heartbeat:Wait()
+			SlashPart.CFrame *= CFrame.new(0, 0, SLASH_SPEED * dt)
+
+			local Params = OverlapParams.new()
+			Params.FilterType = Enum.RaycastFilterType.Include
+			Params.FilterDescendantsInstances = {workspace:WaitForChild("Mobs")}
+
+			local PartsInArea = workspace:GetPartBoundsInBox(SlashPart.CFrame, SlashPart.Size, Params)
+			for _, part in ipairs(PartsInArea) do
+				local mobInstance = part.Parent
+				if CollectionService:HasTag(mobInstance, "Mob") and not HitMobs[mobInstance] then
+					local mobObject = MobList[mobInstance]
+					if mobObject and not mobObject.isDead then
+						HitMobs[mobInstance] = true
+						DamageLib:DamageMob(Player, mobObject, {
+							Ignore = true, 
+							Damage = SlashDamage, 
+							Tool = Tool, 
+							ClassType = "Skill"
+						})
+					end
+				end
+			end
+		end
+		Debris:AddItem(SlashPart, 0.75)
+	end)
+end
+
+function Keybind:OnLetGo(Player) end
+
+return Keybind

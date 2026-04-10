@@ -37,7 +37,7 @@ return function(Gui)
 	if not GameConfig.EnabledFeatures.Attributes then
 		return
 	end
-	
+
 	--> References
 	local PopupFrame = Gui:WaitForChild("PopupFrame")
 
@@ -52,18 +52,18 @@ return function(Gui)
 	local Sidebar = Content:WaitForChild("Sidebar")
 
 	local AmountTextBox = List:WaitForChild("Amount")
-	
+
 	--> Variables
 	local Primary, Secondary, Background = ColorModule:ConvertToHSV3(GameConfig.FrameColors.Attributes)
-	
+
 	local AttributeTab = ""
-	local RequestedPoints = 0
+	local RequestedPoints = nil -- Changed default from 0 to nil for logic check
 
 	local Connections = {}
 	local TabButtons = {}
-	
+
 	--------------------------------------------------------------------------------
-	
+
 	local function OpenPopupFrame()
 		SetCanvasGroupVisibility(MainFrame, false)
 		SetCanvasGroupVisibility(PopupFrame, true)
@@ -73,7 +73,7 @@ return function(Gui)
 		SetCanvasGroupVisibility(MainFrame, true)
 		SetCanvasGroupVisibility(PopupFrame, false)
 	end
-	
+
 	PopupFrame:WaitForChild("Content").Confirm.Activated:Connect(function()
 		local CurrentPoints = PointsValue.Value
 		local Success, Response = EventModule:InvokeServer("ResetAttributes")
@@ -97,7 +97,9 @@ return function(Gui)
 	---- ATTRIBUTE LOGIC ---------------------------------------------------------
 
 	local function ChangeAmountText(Amount)
-		Content.Cost.Text = `Costs <b>{FormatNumber(math.abs(Amount), "Suffix")}</b> Points`
+		-- If Amount is nil/0/invalid, default display cost to 1 (since that's the default action)
+		local displayAmount = (Amount and Amount > 0) and Amount or 1
+		Content.Cost.Text = `Costs <b>{FormatNumber(math.abs(displayAmount), "Suffix")}</b> Points`
 	end
 
 	local function SelectedAttributeTab(Attribute)
@@ -133,7 +135,7 @@ return function(Gui)
 				List.Confirm.AutoButtonColor = false
 				List.Confirm.Active = false
 				List.Confirm.Interactable = false
-				List.Confirm.Text = "Max"
+				List.Confirm.TextLabel.Text = "Max"
 				Content.Cost.Visible = false
 				Scaling.Background.Visible = false
 			elseif not IsMaxed then
@@ -144,7 +146,7 @@ return function(Gui)
 				List.Confirm.AutoButtonColor = true
 				List.Confirm.Active = true
 				List.Confirm.Interactable = true
-				List.Confirm.Text = "Confirm"
+				List.Confirm.TextLabel.Text = "Confirm"
 				Content.Cost.Visible = true
 				Scaling.Background.Visible = true
 			end
@@ -159,13 +161,13 @@ return function(Gui)
 		AttributePointsChanged()
 
 		AmountTextBox.Text = ""
-		RequestedPoints = 0
+		RequestedPoints = nil
 		ChangeAmountText(RequestedPoints)
 	end
 
 	local function ClearFocus()
 		AmountTextBox.Text = ""
-		RequestedPoints = 0
+		RequestedPoints = nil
 		ChangeAmountText(RequestedPoints)
 	end
 
@@ -190,11 +192,20 @@ return function(Gui)
 	List:WaitForChild("Confirm").Activated:Connect(function()
 		local CurrentTab = AttributeTab
 
-		local CurrentAllocated = RequestedPoints
-		if CurrentAllocated == nil or CurrentAllocated < 1 then
+		-- Determine the actual amount to request.
+		-- If RequestedPoints is nil (box empty), use 1.
+		-- Otherwise, clamp it to at least 1.
+		-- Also ensure we adhere to "CanRequestItemWithNoAmountInput" config if you added that specific key,
+		-- but since this is Attributes, we generally always want this behavior for better UX.
+
+		-- Logic: If box is empty (RequestedPoints is nil), default to 1. 
+		local CurrentAllocated = (RequestedPoints or 1)
+
+		-- Sanity check: ensure at least 1 point is being requested
+		if CurrentAllocated < 1 then
 			return
 		end
-		
+
 		local Success, Response = EventModule:InvokeServer("AllocatePoints", CurrentTab, CurrentAllocated)
 		if Success then
 			ClearFocus()
@@ -214,15 +225,8 @@ return function(Gui)
 	---- MAIN FRAME LOGIC ----------------------------------------------------------
 
 	-- Update attributes color
-	Titlebar.BackgroundColor3 = Primary
-	Titlebar.TextColor3 = Secondary
-
-	MainFrame.ExitButton.TextColor3 = Secondary
 	MainFrame.BackgroundColor3 = Background
-	MainFrame.UIStroke.Color = Background
 
-	Sidebar.Confirm.BackgroundColor3 = Primary
-	Sidebar.Confirm.TextColor3 = Secondary
 	Scaling.BackgroundColor3 = Background
 	Scaling.Background.BackgroundColor3 = Background
 
@@ -230,21 +234,18 @@ return function(Gui)
 	List.Amount.TextColor3 = Secondary
 	List.Amount.PlaceholderColor3 = Secondary:Lerp(Primary, 0.05)
 	List.Confirm.BackgroundColor3 = Primary
-	List.Confirm.TextColor3 = Secondary
 
 	PopupFrame.Titlebar.BackgroundColor3 = Primary
-	PopupFrame.ExitButton.TextColor3 = Secondary
 	PopupFrame.Content.Confirm.BackgroundColor3 = Primary
 	PopupFrame.Content.Confirm.TextColor3 = Secondary
 	PopupFrame.BackgroundColor3 = Background
-	PopupFrame.UIStroke.Color = Background
 
 	-- Add tab buttons
 	for Attribute, Data in GameConfig.Attributes do
 		local Frame = script.TabButton:Clone()
 		Frame.Parent = Sidebar:WaitForChild("ScrollingFrame")
 		Frame.Name = Attribute
-		Frame.Text = Attribute
+		Frame.TextLabel.Text = Attribute
 		Frame.LayoutOrder = Data.LayoutOrder
 		Frame.BackgroundColor3 = Primary
 		Frame.TextColor3 = Secondary
@@ -267,7 +268,7 @@ return function(Gui)
 	end
 
 	SelectedAttributeTab(FirstOrder)
-	
+
 	if GameConfig.ScaleAttributesUI then
 		local function UpdateScale()
 			task.defer(function()

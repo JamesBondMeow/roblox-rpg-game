@@ -1,0 +1,34 @@
+--[[
+	DashManaHandler
+	Server-sided check to deduct mana from dashing so the regen loop catches it.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+
+EventModule:GetOnServerEvent("PlayerDashedMana"):Connect(function(Player, Cost)
+	-- Anti-exploit: Ensure they aren't sending fake large costs to break the game
+	if type(Cost) ~= "number" or Cost > 5 then return end
+
+	local Character = Player.Character
+	if not Character then return end
+
+	local Humanoid = Character:FindFirstChild("Humanoid")
+	if not Humanoid or Humanoid.Health <= 0 then return end
+
+	local ManaFolder = Humanoid:FindFirstChild("Mana")
+	local ManaObj = ManaFolder and ManaFolder:FindFirstChild("Mana")
+
+	if ManaObj then
+		local CurrentMana = ManaObj:GetAttribute("Default") or 0
+
+		-- Deduct the mana on the server
+		ManaObj:SetAttribute("Default", math.max(0, CurrentMana - Cost))
+
+		-- If your regen system uses an attribute to delay regen after casting, it usually looks like this:
+		-- (If you don't use this, it won't hurt to have it)
+		ManaObj:SetAttribute("LastUsed", os.clock()) 
+	end
+end)
+
+return {}

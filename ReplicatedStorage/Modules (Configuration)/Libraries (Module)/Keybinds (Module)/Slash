@@ -1,0 +1,42 @@
+-- [CLIENT]
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+local SFX = require(ReplicatedStorage.Modules.Shared.SFX)
+
+local Keybind = {}
+
+-- Validation check for the Keybind System
+function Keybind:Validate(Player)
+	local Character = Player.Character
+	local humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local manaFolder = humanoid and humanoid:FindFirstChild("Mana")
+	local manaValue = manaFolder and manaFolder:FindFirstChild("Mana")
+	local currentMana = manaValue and manaValue:GetAttribute("Default") or 0
+
+	return currentMana >= 25
+end
+
+function Keybind:OnActivated(Player)
+	-- Re-verify validation before playing animations
+	if not self:Validate(Player) then return end
+
+	local Character = Player.Character
+	local humanoid = Character:FindFirstChildOfClass("Humanoid")
+	local rootPart = Character:FindFirstChild("HumanoidRootPart")
+
+	local Tool = Character:FindFirstChildWhichIsA("Tool")
+	if not Tool then return end
+
+	local slashAnim = Instance.new("Animation")
+	slashAnim.AnimationId = "rbxassetid://72919649282071"
+	local track = humanoid:LoadAnimation(slashAnim)
+	track:Play()
+
+	SFX:Play3D("rbxassetid://12222216", rootPart)
+	Debris:AddItem(slashAnim, 0.75)
+end
+
+function Keybind:OnLetGo(Player) end
+
+return Keybind

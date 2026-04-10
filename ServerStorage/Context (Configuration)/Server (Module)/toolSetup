@@ -42,7 +42,7 @@ local function PlayerAdded(Player)
 				local Callback = require(Module)
 				local Thread = task.spawn(Callback, Tool)
 
-				-- Garbagecollect required modules :3
+				-- Garbagecollect required modules
 				local function RequestGarbageCollectThread(Child, Parent)
 					if Parent == nil then
 						task.cancel(Thread)
@@ -58,19 +58,49 @@ local function PlayerAdded(Player)
 		end
 	end
 
-	local function BackpackAdded(Backpack)
-		if Backpack:IsA("Backpack") then
-			for _, Tool in Backpack:GetChildren() do
+	-- Dynamically hook into the Character to catch tools that bypass the Backpack (e.g. auto-equips)
+	local function CharacterAdded(Character)
+		for _, Tool in ipairs(Character:GetChildren()) do
+			if Tool:IsA("Tool") then
 				task.spawn(ToolAdded, Tool)
 			end
-			Backpack.ChildAdded:Connect(ToolAdded)
+		end
+
+		Character.ChildAdded:Connect(function(Child)
+			if Child:IsA("Tool") then
+				task.spawn(ToolAdded, Child)
+			end
+		end)
+	end
+
+	-- Bulletproof Backpack listener
+	local function BackpackAdded(Backpack)
+		if Backpack:IsA("Backpack") then
+			for _, Tool in ipairs(Backpack:GetChildren()) do
+				if Tool:IsA("Tool") then
+					task.spawn(ToolAdded, Tool)
+				end
+			end
+
+			Backpack.ChildAdded:Connect(function(Child)
+				if Child:IsA("Tool") then
+					task.spawn(ToolAdded, Child)
+				end
+			end)
 		end
 	end
 
-	if Player:FindFirstChild("Backpack") then
-		BackpackAdded(Player.Backpack)
+	-- Connect Live Character Events
+	Player.CharacterAdded:Connect(CharacterAdded)
+	if Player.Character then
+		task.spawn(CharacterAdded, Player.Character)
 	end
+
+	-- Connect Live Backpack Events
 	Player.ChildAdded:Connect(BackpackAdded)
+	if Player:FindFirstChild("Backpack") then
+		task.spawn(BackpackAdded, Player.Backpack)
+	end
 end
 
 for _, Player in Players:GetPlayers() do

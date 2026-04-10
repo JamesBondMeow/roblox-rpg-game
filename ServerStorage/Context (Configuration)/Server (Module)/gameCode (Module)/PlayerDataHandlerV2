@@ -2,10 +2,10 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 --> References
 local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
-
 local Server = ServerStorage.Modules.Server
 local Libraries = ServerStorage.Modules.Libraries
 
@@ -30,15 +30,96 @@ local ADMIN_ITEMS = {
 }
 
 Players.CharacterAutoLoads = false
-
 --------------------------------------------------------------------------------
 
-local function GiveTemporaryItem(Player, pData, ContentItem)
-	local Module = itemLibrary(ContentItem[1])
+local function GrantItem(Player, pData, ContentItem, dontSave)
+	local itemType = ContentItem[1]
+	local itemName = ContentItem[2]
+	local itemAmount = ContentItem[3] or 1
 
-	if not pData.Items[ContentItem[1]]:FindFirstChild(ContentItem[2]) then
-		Module:Give(Player, ContentLibrary[ContentItem[1]][ContentItem[2]], true)
+	local Module = itemLibrary(itemType)
+	local itemData = ContentLibrary[itemType] and ContentLibrary[itemType][itemName]
+
+	if not Module or not itemData then
+		warn("GrantItem: Could not find item", itemType, itemName)
+		return false
 	end
+
+	local success = pcall(Module.Give, Module, Player, itemData, dontSave, nil, itemAmount)
+	return success
+end
+
+-- Grant game pass items if not already awarded
+local function GrantGamepassItemsOnce(Player, pData, ProductData)
+	if not ProductData or ProductData.Type ~= "Gamepass" or not ProductData.AssetID then return false end
+
+	local AwardedGamepassesFolder = pData:WaitForChild("AwardedGamepasses")
+	local awardFlagName = "Awarded_GP_" .. ProductData.AssetID
+
+	if not AwardedGamepassesFolder:FindFirstChild(awardFlagName) then
+		local allItemsGranted = true
+
+		for _, ItemData in ipairs(ProductData.Items or {}) do
+			if not GrantItem(Player, pData, ItemData, false) then
+				allItemsGranted = false
+				break
+			end
+		end
+
+		if allItemsGranted then
+			local flagValue = Instance.new("BoolValue")
+			flagValue.Name = awardFlagName
+			flagValue.Value = true
+			flagValue.Parent = AwardedGamepassesFolder
+			return true
+		end
+		return false
+	end
+	return true
+end
+
+-- Apply attributes for ALL owned gamepasses (Checked via Attributes)
+local function ApplyAllOwnedGamepassAttributes(Player, Character)
+	if not Character then return end
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+	if not Humanoid then return end
+
+	local HumanoidAttributes = Humanoid:WaitForChild("Attributes", 5)
+	local ManaAttributes = Humanoid:WaitForChild("Mana", 5)
+	if not HumanoidAttributes or not ManaAttributes then return end
+
+	local GivenMana = 0
+	local GivenStats = { Health = 0, WalkSpeed = 0, JumpPower = 0 }
+
+	-- Iterate GameConfig to see what we own based on Attributes
+	for _, Product in ipairs(GameConfig.Products) do
+		if Product.Type == "Gamepass" or Product.Type == "Deal" then
+			-- CHECK ATTRIBUTE ONLY (Simplified Source of Truth)
+			if Player:GetAttribute(tostring(Product.AssetID)) == true then
+				for Name, Value in pairs(Product.Attributes or {}) do
+					if GivenStats[Name] then
+						GivenStats[Name] += Value
+					elseif Name == "Mana" then
+						GivenMana += Value
+					end
+				end
+			end
+		end
+	end
+
+	-- Apply
+	for StatName, Value in pairs(GivenStats) do
+		local AttrInstance = HumanoidAttributes:FindFirstChild(StatName)
+		if AttrInstance then
+			AttrInstance:SetAttribute("Product", Value)
+		end
+	end
+
+	local MaxMana = ManaAttributes:FindFirstChild("MaxMana")
+	if MaxMana then
+		MaxMana:SetAttribute("Product", GivenMana)
+	end
+	print("Applied gamepass/deal attributes for", Player.Name)
 end
 
 local function OnPlayerAdded(Player: Player)
@@ -47,173 +128,146 @@ local function OnPlayerAdded(Player: Player)
 	local pData = PlayerData:WaitForChild(Player.UserId)
 	local Level = pData.Stats.Level
 	local XP = pData.Stats.XP
-	
+
 	AttributeModule:CreateAttributeFolder(Player)
 
-	-- Character addded
+	-- SYNC GAMEPASS OWNERSHIP ON JOIN
+	-- This checks Roblox API and sets the Attribute so the rest of the game knows we own it.
+	task.spawn(function()
+		-- Check all gamepasses to ensure Attributes are set correctly on the Server
+		for _, product in ipairs(GameConfig.Products) do
+			if product.Type == "Gamepass" and product.AssetID ~= 0 then
+				ProductLib:PlayerHasGamepass(Player, product.AssetID)
+			end
+		end
+		-- Re-apply stats now that attributes are synced
+		if Player.Character then
+			ApplyAllOwnedGamepassAttributes(Player, Player.Character)
+		end
+	end)
+
+	-- Character added
 	local function OnCharacterAdded(Character: Model)
 		local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
-
 		AttributeModule:CreateAttributeFolder(Character)
-		local ClassBoosts, Statistics, ManaAttributes = PlayerUtils:CreateHumanoidStats(Humanoid)
 
-		-- Humanoid attributes & product handling
+		-- Setup Base Stats
 		local HumanoidAttributes = HumanoidAttributes.new(Humanoid)
+		local _, _, ManaAttributes = PlayerUtils:CreateHumanoidStats(Humanoid)
 
-		local GivenMana = 0
-		local GivenStats = {
-			["Health"] = 0,
-			["WalkSpeed"] = 0,
-			["JumpPower"] = 0,
-		}
-
-		local Products = ProductLib:GetProducts(Player)
-		for _, Product in Products do
-			for Name: string, Value: number in Product.Attributes do
-				if GivenStats[Name] then
-					GivenStats[Name] += Value
-				elseif Name == "Mana" then
-					GivenMana += Value
-				end
-			end
+		if HumanoidAttributes then
+			HumanoidAttributes.Instance.Health:SetAttribute("Level", Level.Value * GameConfig.HealthPerLevel)
+		end
+		if ManaAttributes then
+			ManaAttributes.MaxMana:SetAttribute("Level", Level.Value * GameConfig.ManaPerLevel)
+			local maxManaOnLoad = 0
+			for _, Value in ManaAttributes.MaxMana:GetAttributes() do maxManaOnLoad += Value end
+			ManaAttributes.Mana:SetAttribute("Default", maxManaOnLoad)
 		end
 
-		for _, Attribute in HumanoidAttributes.Instance:GetChildren() do
-			Attribute:SetAttribute("Product", GivenStats[Attribute.Name])
-		end
-		HumanoidAttributes.Instance.Health:SetAttribute("Level", Level.Value * GameConfig.HealthPerLevel)
+		-- Apply Stats Every Spawn
+		task.delay(1, function()
+			ApplyAllOwnedGamepassAttributes(Player, Character)
+		end)
 
-		-- Handle mana resetting on player death
+		-- Mana Clamping
 		local Mana = ManaAttributes.Mana
-		local MaxMana = ManaAttributes.MaxMana
-
-		local function GetMaxMana()
-			local MaxManaAmount = 0
-			for Name, Value in MaxMana:GetAttributes() do
-				if Value ~= Value then Value = 0 end
-				MaxManaAmount += Value
-			end
-			
-			return MaxManaAmount
-		end
-		
+		local MaxManaValue = ManaAttributes.MaxMana
 		local function ClampMana()
-			local MaxMana = GetMaxMana()
-			
-			if Mana:GetAttribute("Default") > MaxMana then
-				Mana:SetAttribute("Default", MaxMana)
-			end
+			local currentMax = 0
+			for _, Value in MaxManaValue:GetAttributes() do currentMax += Value end
+			if Mana:GetAttribute("Default") > currentMax then Mana:SetAttribute("Default", currentMax) end
 		end
-
-		MaxMana:SetAttribute("Product", GivenMana)
-		MaxMana:SetAttribute("Level", Level.Value * GameConfig.ManaPerLevel)
-		MaxMana.AttributeChanged:Connect(ClampMana)
-		
-		Mana:SetAttribute("Default", GetMaxMana())
+		MaxManaValue.AttributeChanged:Connect(ClampMana)
 		Mana.AttributeChanged:Connect(ClampMana)
 
-		-- Ragdoll on death
+		-- Death Logic
 		Humanoid.Died:Connect(function()
-			task.delay(RESPAWN_TIME, function()
-				pcall(function()
-					if Player.Character then
-						Player.Character:Destroy()
-						Player.Character = nil
-					end
-					Player:LoadCharacter()
-				end)
-			end)
-
+			task.delay(RESPAWN_TIME, function() pcall(Player.LoadCharacter, Player) end)
 			Mana:SetAttribute("Default", 0)
 			ActivateRagdoll(Character)
 		end)
-		
 		Humanoid.BreakJointsOnDeath = false
 
-		-- Destroy health regen
+		-- Cleanup
 		task.defer(function()
 			local HealthScript = Character:WaitForChild("Health", 1)
-			if HealthScript then
-				HealthScript:Destroy()
-			end
-		end)
-		
-		-- Parent a forcefield to the torso (prevents weird bugs)
-		task.defer(function()
+			if HealthScript then HealthScript:Destroy() end
 			local Forcefield = Character:WaitForChild("ForceField", 1)
 			if Forcefield and Character:WaitForChild("Torso", 0.5) then
 				task.wait(0.5)
 				Forcefield.Parent = Character.Torso
 			end
-		end)
-
-		-- Force the character into the correct folder
-		task.defer(function()
 			Character.Parent = workspace.Characters
 		end)
 	end
-	
-	-- Connect on character added
-	if Player.Character then
-		task.spawn(OnCharacterAdded, Player.Character)
-	end
+
+	if Player.Character then task.spawn(OnCharacterAdded, Player.Character) end
 	Player.CharacterAdded:Connect(OnCharacterAdded)
-	
-	---- Connect player to the rest of stuff!
-	
+
+	-- Setup Data
 	pData:WaitForChild("Hotbar")
-	
 	local Logged = PlayerUtils:CheckIfLogged(Player)
-	
-	-- Player leveling
 	task.defer(function()
 		PlayerLeveling:TryLevelUp(Player, Level, XP)
-		XP.Changed:Connect(function()
-			PlayerLeveling:TryLevelUp(Player, Level, XP)
-		end)
+		XP.Changed:Connect(function() PlayerLeveling:TryLevelUp(Player, Level, XP) end)
 	end)
-	
 	PlayerUtils:SetUpChestsLoop(Player, pData:WaitForChild("Chests"))
 	PlayerUtils:SetUpManaLoop(Player, Level)
 	PlayerUtils:SetUpPlayerStats(Player)
-	
-	-- Give items (starter, admin items, & product)
-	for _, StarterItem in GameConfig.StarterItems do
-		GiveTemporaryItem(Player, pData, StarterItem)
-	end
-	
+
+	-- Give items based on what we own (Attributes)
+	-- Wait a moment for the sync above to finish
+	task.delay(2, function() 
+		local Products = ProductLib:GetProducts(Player)
+		for _, Product in ipairs(Products or {}) do
+			GrantGamepassItemsOnce(Player, pData, Product)
+		end
+	end)
+
+	-- Admin/Starter Items
+	for _, StarterItem in ipairs(GameConfig.StarterItems or {}) do GrantItem(Player, pData, StarterItem, true) end
 	local GivenUserID = ADMIN_ITEMS[Player.UserId]
-	for _, StarterItem in GivenUserID or {} do
-		GiveTemporaryItem(Player, pData, StarterItem)
-	end
-	
-	local Products = ProductLib:GetProducts(Player)
-	for _, Product in Products do
-		for _, Item: {[number]: string} in Product.Items do
-			GiveTemporaryItem(Player, pData, Item)
-		end
-	end
-	
-	-- If the hotbar is completely empty, fill it with starter items
+	for _, AdminItem in ipairs(GivenUserID or {}) do GrantItem(Player, pData, AdminItem, true) end
+
+	-- Hotbar
 	local isEmpty = true
-	for _, ValueObject in pData.Hotbar:GetChildren() do
-		if ValueObject.Value ~= "" then
-			isEmpty = false
-		end
-	end
-	
+	for _, ValueObject in ipairs(pData.Hotbar:GetChildren()) do if ValueObject.Value ~= "" then isEmpty = false; break end end
 	if isEmpty and Logged then
-		for n, StarterItem in GameConfig.StarterItems do
-			if n <= 9 then
-				pData.Hotbar[tostring(n)].Value = StarterItem[2]
-			end
-		end
+		for n, StarterItem in ipairs(GameConfig.StarterItems or {}) do if n <= 9 then pData.Hotbar[tostring(n)].Value = StarterItem[2] end end
 	end
 end
+
+-- Successful Purchase Handler (For SINGLE Gamepasses)
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamepassId, wasPurchased)
+	if not wasPurchased then return end
+
+	local pData = PlayerData:FindFirstChild(tostring(player.UserId))
+	if not pData then return end
+
+	local productData = nil
+	for _, p in ipairs(GameConfig.Products or {}) do
+		if p.Type == "Gamepass" and p.AssetID == gamepassId then
+			productData = p
+			break
+		end
+	end
+	if not productData then return end
+
+	-- 1. Set Attribute
+	ProductLib:UpdateOwnershipCache(player, gamepassId, true)
+
+	-- 2. Grant Items
+	GrantGamepassItemsOnce(player, pData, productData)
+
+	-- 3. Apply Stats
+	ApplyAllOwnedGamepassAttributes(player, player.Character)
+end)
 
 Players.PlayerAdded:Connect(OnPlayerAdded)
-for _, Player in Players:GetPlayers() do
-	task.spawn(OnPlayerAdded, Player)
-end
+for _, Player in ipairs(Players:GetPlayers()) do task.spawn(OnPlayerAdded, Player) end
 
-return {}
+return {
+	GrantGamepassItemsOnce = GrantGamepassItemsOnce,
+	ApplyAllOwnedGamepassAttributes = ApplyAllOwnedGamepassAttributes
+}

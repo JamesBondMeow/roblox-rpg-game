@@ -33,11 +33,11 @@ local SFX = require(Modules.Shared.SFX)
 local PlayingZoneObject = nil
 
 local ZoneClock = os.clock()
-local ZoneTransitionTime = 0.5
+local ZoneTransitionTime = 1
 
 local Sound = Instance.new("Sound")
 Sound.Parent = SoundService
-Sound.Volume = 0.5
+Sound.Volume = 0.1
 Sound.SoundId = ""
 
 --------------------------------------------------------------------------------
@@ -53,8 +53,6 @@ local DefaultLighting = {
 	
 	GlobalShadows = Lighting.GlobalShadows,
 	ShadowSoftness = Lighting.ShadowSoftness,
-	ClockTime = Lighting.ClockTime,
-	GeographicLatitude = Lighting.GeographicLatitude,
 	
 	Brightness = Lighting.Brightness,
 	ExposureCompensation = Lighting.ExposureCompensation,
@@ -216,9 +214,6 @@ function Zone.new(ZoneObject)
 			Hitbox.Touched:Connect(function(Hit)
 				local _Player = Players:GetPlayerFromCharacter(Hit.Parent)
 				if _Player == Player and PlayingZoneObject ~= self then
-					if os.clock() - ZoneClock < ZoneTransitionTime then
-						return
-					end
 
 					local Clock = os.clock()
 					ZoneClock = Clock
@@ -274,12 +269,13 @@ function Zone:ApplyAreaAlert()
 	-- Fade UI
 	Tween:Play(AreaAlert.UIPadding, {0.5, "Back", "Out"}, {PaddingTop =  UDim.new(0, 10)})
 	Tween:Play(AreaAlert, {0.5, "Circular"}, {GroupTransparency = 0})
-	task.delay(2, function()
+	
+	task.delay(4, function()
 		Tween:Play(AreaAlert.UIPadding, {0.5, "Circular"}, {PaddingTop =  UDim.new(0, -10)})
 		Tween:Play(AreaAlert, {0.5, "Circular"}, {GroupTransparency = 1})
 	end)
 	
-	Debris:AddItem(AreaAlert, 2.5)
+	Debris:AddItem(AreaAlert, 4.5)
 end
 
 function Zone:ApplySFX(Clock)

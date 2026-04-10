@@ -54,17 +54,26 @@ return function(Gui)
 	if not GameConfig.EnabledFeatures.Crafting then
 		return
 	end
-	
+
 	--> References
 	local MainFrame = Gui:WaitForChild("MainFrame")
 	local ExitButton = MainFrame:WaitForChild("Display"):WaitForChild("ExitButton")
 	local PopupFrame = Gui:WaitForChild("PopupFrame")
-	
+
 	local PinGui = PlayerGui:WaitForChild("Pin")
 	local CraftingPinFrame = PinGui:WaitForChild("Crafting")
 
 	local AmountTextBox = PopupFrame:WaitForChild("Content"):WaitForChild("List"):WaitForChild("Amount")
 	local CraftButton = PopupFrame:WaitForChild("Content"):WaitForChild("List"):WaitForChild("Craft")
+	local SuccessChanceLabel = PopupFrame:WaitForChild("Content"):WaitForChild("SuccessChance")
+	local EssenceFrame = PopupFrame:WaitForChild("Content"):WaitForChild("EssenceFrame")
+
+	local EssenceDropdown = EssenceFrame:WaitForChild("SelectedOption")
+	local OptionList = EssenceFrame:WaitForChild("OptionList")
+	local ApplyEssenceButton = EssenceFrame:WaitForChild("ApplyEssence")
+
+	local appliedEssences = {} 
+	local pendingEssence = "" 
 
 	local PopupBackground = CraftingPinFrame:WaitForChild("PopupBackground")
 	local Resize = CraftingPinFrame:WaitForChild("Resize")
@@ -73,72 +82,26 @@ return function(Gui)
 	local StatisticsFrame = ScrollingFrame:WaitForChild("Statistics")
 
 	local Stats = pData:WaitForChild("Stats")
-	
+
 	--------------------------------------------------------------------------------
-	
+
 	local SlotConnections = {}
 	local ActiveColor = ColorModule:GetBaseColor()
 
 	local function UpdatePinColor(Color)
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
 
-		CraftingPinFrame.Resize.ImageLabel.ImageColor3 = Primary
-		CraftingPinFrame.Resize.BackgroundColor3 = Background
 		CraftingPinFrame.PopupBackground.BackgroundColor3 = Background
 		CraftingPinFrame.PopupBackground.Background.BackgroundColor3 = Background
 		CraftingPinFrame.PopupBackground.Background.Frame.BackgroundColor3 = Background
 		CraftingPinFrame.PopupBackground.Background.Fill.BackgroundColor3 = Primary
 		CraftingPinFrame.PopupBackground.Background.Fill.BackgroundColor3 = Primary
 		CraftingPinFrame.PopupBackground.Background.ScrollingFrame.ScrollBarImageColor3 = Primary
-		CraftingPinFrame.PopupBackground.Background.Percentage.TextColor3 = Primary
-		CraftingPinFrame.PopupBackground.Title.ExitButton.TextColor3 = Primary
 		CraftingPinFrame.PopupBackground.Title.Display.TextColor3 = Primary	
-		
+
 		return Primary, Secondary, Background
 	end
 
-	local function UpdatePopupColor(Color: Color3)
-		local Titlebar = PopupFrame:WaitForChild("Titlebar")
-		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
-
-		Titlebar.BackgroundColor3 = Primary
-		PopupFrame.Titlebar.BackgroundColor3 = Primary
-		PopupFrame.ExitButton.TextColor3 = Secondary
-		PopupFrame.Content.List.Craft.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Craft.TextColor3 = Secondary
-		PopupFrame.Content.Recipe.BackgroundColor3 = Secondary
-		PopupFrame.Content.Recipe.Icon.ImageColor3 = Primary
-		PopupFrame.Content.Recipe.Label.TextColor3 = Primary
-		PopupFrame.Content.List.Amount.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Amount.PlaceholderColor3 = Secondary:Lerp(Primary, 0.05)
-		PopupFrame.Content.List.Amount.TextColor3 = Secondary
-		PopupFrame.Content.ItemIcon.BackgroundColor3 = Secondary
-		PopupFrame.BackgroundColor3 = Background
-		PopupFrame.UIStroke.Color = Background
-		
-		return Primary, Secondary, Background
-	end
-
-	local function UpdateShopColor(Color: Color3)
-		local Titlebar = MainFrame:WaitForChild("Display"):WaitForChild("Body"):WaitForChild("Titlebar")
-		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
-
-		ActiveColor.Primary = Primary
-		ActiveColor.Secondary = Secondary
-		ActiveColor.Background = Background
-
-		Titlebar.BackgroundColor3 = Primary
-		Titlebar.TextColor3 = Secondary
-
-		MainFrame.Display.ExitButton.TextColor3 = Secondary
-		MainFrame.Display.Content.ScrollingFrame.ScrollBarImageColor3 = Primary
-		MainFrame.Display.Content.Frame.BackgroundColor3 = Secondary
-		MainFrame.Display.BackgroundColor3 = Background
-		MainFrame.Display.UIStroke.Color = Background
-	end
-
-	-- Sets slot colors based off the active colors, and the given state value.
-	-- If true, the base uses primary (brighter/owned). If false, the base uses secondary (darker/default)
 	local function UpdateSlotColor(Slot)
 		local Color = ColorModule:GetPrimaryColor(Slot.Item)
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
@@ -147,52 +110,45 @@ return function(Gui)
 		local Foreground = Primary
 		local Frame = Slot.Frame
 
-		Frame.BG.BackgroundColor3 = Background
-		Frame.Button.BackgroundColor3 = Background
-		Frame.Pin.BackgroundColor3 = Foreground
-		Frame.Pin.ImageLabel.ImageColor3 = Background
+		Frame.Button.BackgroundColor3 = Foreground
 		Frame.ItemIcon.BackgroundColor3 = Background
-		Frame.ItemName.TextColor3 = Foreground
-		Frame.ItemLevel.TextColor3 = Foreground
 		Frame.Locked.Icon.ImageColor3 = Foreground
 		Frame.Locked.TextLabel.TextColor3 = Foreground
 		Frame.Owned.Icon.ImageColor3 = Foreground
 		Frame.Owned.TextLabel.TextColor3 = Foreground
-		
+
 		return Primary, Secondary, Background
 	end
 
-	-- This code is really ugly, I may revamp it in the future
 	local function UpdateSlot(Slot)
 		local ItemValue = ItemsFolder:WaitForChild(Slot.Item.Type):FindFirstChild(Slot.Item.Name)
-		local ItemLocked = Level.Value < Slot.Data.Level
 
 		for _, Connection in SlotConnections[Slot] or {} do
 			Connection:Disconnect()
 			Connection = nil
 		end
-		
+
 		SlotConnections[Slot] = {}
-		
+
 		local Frame = Slot.Frame
 
 		local Primary, Secondary, Background = UpdateSlotColor(Slot)
-		
+
 		local Connections = SetTooltipListener(Frame.ItemIcon, Slot.Item.Instance, Primary, Secondary)
 		SlotConnections[Slot] = Connections
-		
+
 		local isStackable = GameConfig.CanItemsStack 
 			or GameConfig.Categories[Slot.Item.Type].IsStackable
-		
+
 		local isOwned = ItemValue and (not isStackable or not Slot.Data.CraftMultiple) and not (ItemValue:IsA("NumberValue") and ItemValue.Value < 1)
-		
+
 		if isOwned then
 			Frame.Button.BackgroundTransparency = 0.25
 			Frame.BG.BackgroundTransparency = 0.25
 			Frame.Button.AutoButtonColor = false
 			Frame.Pin.AutoButtonColor = false
 			Frame.ItemName.Visible = true
-			Frame.ItemLevel.Visible = true
+			Frame.ItemLevel.Visible = true -- Re-enabled
 			Frame.ItemIcon.Visible = true
 			Frame.Locked.Visible = false
 			Frame.Pin.Visible = true
@@ -203,47 +159,30 @@ return function(Gui)
 			Frame.Pin:SetAttribute("DisableSound", true)
 		else
 			Frame.Owned.Visible = false
-			if ItemLocked then
-				Frame.Button.BackgroundTransparency = 0.25
-				Frame.BG.BackgroundTransparency = 0.25
-				Frame.Button.AutoButtonColor = false
-				Frame.Pin.AutoButtonColor = false
-				Frame.ItemName.Visible = false
-				Frame.ItemLevel.Visible = false
-				Frame.ItemIcon.Visible = false
-				Frame.Pin.Visible = false
-				Frame.Pin.Active = false
-				Frame.Locked.Visible = true
-				Frame.Locked.TextLabel.Text = `Unlocks at Level <b>{FormatNumber(Slot.Data.Level, "Suffix")}</b>`
-				Frame.ItemIcon:SetAttribute("DisableTooltip", true)
-				Frame.Button:SetAttribute("DisableSound", true)
-				Frame.Pin:SetAttribute("DisableSound", true)
-			else
-				Frame.Button.BackgroundTransparency = 0
-				Frame.BG.BackgroundTransparency = 0
-				Frame.Button.AutoButtonColor = true
-				Frame.Pin.AutoButtonColor = true
-				Frame.ItemName.Visible = true
-				Frame.ItemLevel.Visible = true
-				Frame.ItemIcon.Visible = true
-				Frame.Pin.Visible = true
-				Frame.Pin.Active = true
-				Frame.Locked.Visible = false
-				Frame.ItemIcon:SetAttribute("DisableTooltip", false)
-				Frame.Button:SetAttribute("DisableSound", false)
-				Frame.Pin:SetAttribute("DisableSound", false)
-			end
+			Frame.Button.BackgroundTransparency = 0
+			Frame.BG.BackgroundTransparency = 0
+			Frame.Button.AutoButtonColor = true
+			Frame.Pin.AutoButtonColor = true
+			Frame.ItemName.Visible = true
+			Frame.ItemLevel.Visible = true -- Re-enabled
+			Frame.ItemIcon.Visible = true
+			Frame.Pin.Visible = true
+			Frame.Pin.Active = true
+			Frame.Locked.Visible = false
+			Frame.ItemIcon:SetAttribute("DisableTooltip", false)
+			Frame.Button:SetAttribute("DisableSound", false)
+			Frame.Pin:SetAttribute("DisableSound", false)
 		end
 	end
 
 	---- PIN FRAME LOGIC ---------------------------------------------------------
-	
+
 	local TotalItemsChecking = {}
 	local PinConnections = {}
 	local PinTemporary = {}
-	
+
 	local PinItem = nil
-	
+
 	local function UpdatePinPercentage(Origin)
 		local Fill = PopupBackground.Background.Fill
 		if Origin then
@@ -252,12 +191,16 @@ return function(Gui)
 
 		local TotalAmountRequired = 0
 		local AmountCompleted = 0
-		
+
 		for _, Boolean in TotalItemsChecking do
 			if Boolean then
 				AmountCompleted += 1
 			end
 			TotalAmountRequired += 1
+		end
+
+		if TotalAmountRequired == 0 then
+			TotalAmountRequired = 1 
 		end
 
 		local Percent = AmountCompleted / TotalAmountRequired
@@ -276,7 +219,7 @@ return function(Gui)
 		if PinItem then
 			ClosePinFrame()
 		end
-		
+
 		PinItem = Item
 
 		for _, Instance in PinTemporary do
@@ -288,13 +231,11 @@ return function(Gui)
 			Connection:Disconnect()
 			Connection = nil
 		end
-		
-		-- Update UI
+
 		for _, Frame in StatisticsFrame.Items:GetChildren() do
 			if Frame:IsA("Frame") then
-				Frame.StatIcon.ImageTransparency = 0
 				Frame.StatCount.TextTransparency = 0
-				
+
 				Frame.Visible = false
 			end
 		end
@@ -304,18 +245,17 @@ return function(Gui)
 		CraftingPinFrame.Size = UDim2.fromOffset(263, math.min(CurrentCamera.ViewportSize.Y / 2, 321))
 
 		PopupBackground.Title.Display.Text = Item.Name
-		
+
 		local Color = ColorModule:GetPrimaryColor(Item)
 		local Primary, Secondary, Background = UpdatePinColor(Color)
 
-		-- Set recipe
 		local CurrentCategories = {["Statistics"] = true}
 		local CurrentSorts = {}
-			
+
 		local CheckIsVisible = false
-			
+
 		TotalItemsChecking = {}
-		
+
 		for Category, Items in Data.Recipe do
 			local DataLibrary = pData.Items:FindFirstChild(Category)
 
@@ -343,7 +283,6 @@ return function(Gui)
 						local Value = Stats:FindFirstChild(Stat[1])
 						local function UpdateCheckVisibility()
 							local IsObtained = Value.Value >= Stat[2]
-							Frame.StatIcon.ImageTransparency = IsObtained and 0.5 or 0
 							Frame.StatCount.TextTransparency = IsObtained and 0.5 or 0
 
 							TotalItemsChecking[Stat[1]] = IsObtained
@@ -355,7 +294,7 @@ return function(Gui)
 
 						CheckIsVisible = true
 						Frame.Visible = true
-						Frame.StatCount.Text = FormatNumber(Stat[2], "Suffix")
+						Frame.StatCount.Text = FormatNumber(Stat[2], "Suffix") .. " Gold"
 					end
 				elseif not IsStatistics then
 					local Frame = script.PinSlotTemplate:Clone()
@@ -381,7 +320,7 @@ return function(Gui)
 						TotalItemsChecking[Stat[1]] = IsObtained
 						UpdatePinPercentage()
 					end
-					
+
 					local function CheckIsNumberValue(DataValue)
 						local IsOnlyAmount = DataValue and DataValue:IsA("NumberValue")
 						if IsOnlyAmount then
@@ -393,9 +332,9 @@ return function(Gui)
 						CheckIsNumberValue(Child)
 						UpdateCheckVisibility()
 					end)
-					
+
 					PinConnections[#PinConnections + 1] = DataLibrary.ChildRemoved:Connect(UpdateCheckVisibility)
-					
+
 					CheckIsNumberValue(DataValue)
 					UpdateCheckVisibility()
 
@@ -427,17 +366,16 @@ return function(Gui)
 		end
 
 		StatisticsFrame.Visible = CheckIsVisible
-		
+
 		PinGui.Enabled = true
 		CraftingPinFrame.UIScale.Scale = 0.75
-		
+
 		UpdatePinPercentage(true)
 		SetCanvasGroupVisibility(CraftingPinFrame, true)
-		
+
 		Tween:Play(CraftingPinFrame.UIScale, {0.3, "Back", "Out"}, {Scale = 1})
 	end
-	
-	-- Create leaderstat display
+
 	for Name, Leaderstat in GameConfig.Leaderstats do
 		local Stat = StatisticsFrame.Items.Template:Clone()
 		Stat.Name = Name
@@ -445,16 +383,12 @@ return function(Gui)
 		local StatColor = GameConfig.UIColors.PrimaryColor
 
 		local StatIconData = GameConfig.LeaderstatIcons[Name]
-		if StatIconData and StatIconData.Image then
+		if StatIconData then
 			if StatIconData.Color then
 				StatColor = StatIconData.Color
 			end
-			Stat.StatIcon.Image = tonumber(StatIconData.Image) and "rbxassetid://" .. StatIconData.Image or StatIconData.Image
-		else
-			Stat.StatIcon.Visible = false
 		end
 
-		Stat.StatIcon.ImageColor3 = StatColor
 		Stat.StatCount.TextColor3 = StatColor
 
 		Stat.Visible = true
@@ -463,52 +397,167 @@ return function(Gui)
 
 	PopupBackground.Title.ExitButton.Activated:Connect(ClosePinFrame)
 	ClosePinFrame()
-	
+
 	StartPinFunction(CraftingPinFrame)
 
 	---- POPUP FRAME LOGIC ---------------------------------------------------------
-	
+
 	local RequestCraftAmount = nil
 	local CurrentSmithery = nil
 	local SmitheryConfig = nil
 	local PopupItem = nil
-	
+
 	local ListenerConnections = {}
 	local ItemSlots = {}
-	
+
 	local Content = PopupFrame:WaitForChild("Content")
+
+	local function calculateSuccessChance(player, itemData, amount, essencesTable)
+		local baseChance = itemData.BaseSuccessChance or 1
+		local decreasePerItem = itemData.ChanceDecreasePerItem or 0
+
+		local totalEssenceIncrease = 0
+		for _, essenceName in ipairs(essencesTable) do
+			if essenceName and essenceName ~= "None" and essenceName ~= "" then
+				local essenceItem = ContentLibrary.Material[essenceName]
+				if essenceItem and essenceItem.Config.SuccessChanceIncrease then
+					totalEssenceIncrease += essenceItem.Config.SuccessChanceIncrease
+				end
+			end
+		end
+
+		local calculationAmount = math.max(amount, 1)
+		local quantityPenalty = (calculationAmount - 1) * decreasePerItem
+
+		local finalChance = math.clamp(baseChance + totalEssenceIncrease - quantityPenalty, 0, 1)
+
+		return finalChance
+	end
+
+	local function updateChanceDisplay()
+		if not PopupItem then return end
+		local smitheryConfig = CurrentSmithery:FindFirstChild("Config") and require(CurrentSmithery.Config)
+		local itemData = ItemSlots[PopupItem.Name].Data
+		local useChanceCrafting = smitheryConfig and smitheryConfig.ChanceCrafting and itemData.BaseSuccessChance
+
+		if useChanceCrafting then
+			local amount = tonumber(AmountTextBox.Text) or 0
+
+			local chance = calculateSuccessChance(Player, itemData, amount, appliedEssences) 
+
+			SuccessChanceLabel.Text = string.format("Chance: %.1f%%", chance * 100)
+
+			ApplyEssenceButton.Active = chance < 1 
+			ApplyEssenceButton.AutoButtonColor = chance < 1
+			ApplyEssenceButton.Text = (chance >= 1 and "Max Chance") or "Apply"
+		end
+	end
+
+	local function refreshEssenceDropdown()
+		if not EssenceFrame.Visible then return end
+
+		local currentlySelectedInDropdown = EssenceDropdown.Text
+
+		for _, child in ipairs(OptionList:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+
+		local essenceOptions = {"None"}
+		local availableEssences = {}
+
+		for essenceName, essenceData in pairs(ContentLibrary.Material) do
+			if essenceData.Config.SuccessChanceIncrease then
+				availableEssences[essenceName] = CountTotalCopies(essenceData)
+			end
+		end
+
+		for _, appliedName in ipairs(appliedEssences) do
+			if availableEssences[appliedName] then
+				availableEssences[appliedName] -= 1
+			end
+		end
+
+		for essenceName, count in pairs(availableEssences) do
+			if count > 0 then
+				table.insert(essenceOptions, essenceName)
+			end
+		end
+		table.sort(essenceOptions)
+
+		for _, optionName in ipairs(essenceOptions) do
+			local optionButton = Instance.new("TextButton")
+			optionButton.Name = optionName
+
+			local countText = ""
+			if optionName ~= "None" then
+				countText = " (" .. (availableEssences[optionName] or 0) .. ")"
+			end
+			optionButton.Text = optionName .. countText
+
+			optionButton.Size = UDim2.new(0, 136, 0, 30)
+			optionButton.Parent = OptionList
+
+			optionButton.BackgroundColor3 = Color3.fromRGB(88, 179, 239)
+			optionButton.BackgroundTransparency = 0.15
+			optionButton.TextColor3 = Color3.fromRGB(39, 68, 83)
+			optionButton.TextSize = 16
+			optionButton.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+			optionButton.BorderSizePixel = 0
+			optionButton.LayoutOrder = (optionName == "None" and -1 or 0)
+
+			optionButton.Activated:Connect(function()
+				EssenceDropdown.Text = optionName
+				pendingEssence = (optionName == "None" and "") or optionName
+				OptionList.Visible = false
+			end)
+		end
+
+		if not table.find(essenceOptions, pendingEssence) and pendingEssence ~= "" then
+			pendingEssence = ""
+			EssenceDropdown.Text = "None"
+		else
+			EssenceDropdown.Text = (pendingEssence == "" and "None") or pendingEssence
+		end
+	end
 
 	local function OpenPopupFrame(Item, Data)
 		PopupItem = Item
+		appliedEssences = {}
+		pendingEssence = ""
+		OptionList.Visible = false
+		EssenceDropdown.Text = "None"
 
-		for _, Connection in ListenerConnections do
-			Connection:Disconnect()
-			Connection = nil
-		end
-
-		local ItemInstance = PopupItem.Instance
-		
-		local Color = ColorModule:GetPrimaryColor(Item)
-		local Primary, Secondary, Background = UpdatePopupColor(Color)
-		
-		ListenerConnections = SetTooltipListener(Content.ItemIcon, ItemInstance, Primary, Secondary)
-		
 		if not Item.Config.IconId then
 			Content.ItemIcon.Label.Visible = false
 		else
 			Content.ItemIcon.Label.Visible = true
 			Content.ItemIcon.Label.Image = tonumber(Item.Config.IconId) and `rbxthumb://type=Asset&h=150&w=150&id={Item.Config.IconId}` or Item.Config.IconId
 		end
-		
+
 		local MaxCraftable = GetMaxCraftable(Data)
-		
+
 		AmountTextBox.PlaceholderText = FormatNumber(math.min(GameConfig.Categories[PopupItem.Type].BulkBuyMax, MaxCraftable), "Suffix")
-		
+
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Item.Type].IsStackable
 		AmountTextBox.Visible = IsStackable
-		
+
+		local smitheryConfig = CurrentSmithery:FindFirstChild("Config") and require(CurrentSmithery.Config)
+		local useChanceCrafting = smitheryConfig and smitheryConfig.ChanceCrafting and Data.BaseSuccessChance
+
+		SuccessChanceLabel.Visible = useChanceCrafting
+		EssenceFrame.Visible = useChanceCrafting
+
+		if useChanceCrafting then
+			refreshEssenceDropdown()
+
+			local amount = tonumber(AmountTextBox.Text) or 0
+			updateChanceDisplay()
+		end
+
 		Content.ItemName.Text = Item.Name
-		
+
 		AmountTextBox.Text = " "
 		task.defer(function()
 			AmountTextBox.Text = ""
@@ -532,27 +581,39 @@ return function(Gui)
 		if not PopupItem then 
 			return 
 		end
-		
+
 		local RequestedCraftAmount = (GameConfig.CanRequestItemWithNoAmountInput and math.clamp(RequestCraftAmount or 1, 1, math.huge))
 			or RequestCraftAmount
 			or not GameConfig.CanItemsStack and not GameConfig.Categories[PopupItem.Type].IsStackable and 1
-		
+
 		if not RequestedCraftAmount or RequestedCraftAmount < 1 or PopupFrame.GroupTransparency == 1 then
 			return
 		end
-		
+
 		local Item = PopupItem
 		local Slot = ItemSlots[Item.Name]
-		
-		local Success, Response = EventModule:InvokeServer("CraftItem", {Slot.Data.Item[1], Slot.Data.Item[2]}, CurrentSmithery, RequestedCraftAmount)
+
+		local Success, Response = EventModule:InvokeServer("CraftItem", {Slot.Data.Item[1], Slot.Data.Item[2]}, CurrentSmithery, RequestedCraftAmount, appliedEssences)
 		if Success then
 			ClosePopupFrame()
 			ClearFocus()
 			UpdateSlot(ItemSlots[Item.Name])
 			CreateNotification("Craft Success!", `{Item.Name} (x{FormatNumber(Response, "Suffix")}) has been crafted!`, 12900311398)
 			SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+
+			appliedEssences = {}
+			pendingEssence = ""
+			task.wait(0.1)
+			refreshEssenceDropdown()
+			updateChanceDisplay()
+
 		else
 			CreateNotification("Craft Failure!", Response, 12900311562)
+			appliedEssences = {}
+			pendingEssence = ""
+			task.wait(0.1)
+			refreshEssenceDropdown()
+			updateChanceDisplay()
 		end
 	end)
 
@@ -562,17 +623,20 @@ return function(Gui)
 		Amount = Amount and math.floor(Amount)
 
 		if (Text == "" or not Amount or math.abs(Amount) ~= Amount) and not string.find(Text, "e") then
-			return ClearFocus()
-		end
+			Amount = 0
+			RequestCraftAmount = nil
+			AmountTextBox.Text = ""
+			ClearFocus()
+		else
+			local Slot = ItemSlots[PopupItem.Name]
+			if not Slot then return end
 
-		local Slot = ItemSlots[PopupItem.Name]
-
-		if Amount ~= nil then
 			Amount = math.min(Amount, GameConfig.Categories[PopupItem.Type].BulkBuyMax, GetMaxCraftable(Slot.Data))
 			AmountTextBox.Text = Amount
+			RequestCraftAmount = Amount
 		end
 
-		RequestCraftAmount = Amount
+		updateChanceDisplay()
 	end)
 
 	PopupFrame:WaitForChild("ExitButton").Activated:Connect(function()
@@ -582,10 +646,47 @@ return function(Gui)
 	PopupFrame.Content:WaitForChild("Recipe").Activated:Connect(function()
 		local CurrentItem = PopupItem
 		local Slot = ItemSlots[CurrentItem.Name]
-		
+
 		OpenPinFrame(CurrentItem, Slot.Data)
 	end)
-	
+
+	EssenceDropdown.Activated:Connect(function()
+		OptionList.Visible = not OptionList.Visible
+	end)
+
+	ApplyEssenceButton.Activated:Connect(function()
+		if pendingEssence == "" or pendingEssence == "None" or (SuccessChanceLabel.Text == "Chance: 100.0%") then
+			return
+		end
+
+		local essenceItem = ContentLibrary.Material[pendingEssence]
+		local totalOwned = CountTotalCopies(essenceItem)
+		local alreadyAppliedCount = 0
+		for _, appliedName in ipairs(appliedEssences) do
+			if appliedName == pendingEssence then
+				alreadyAppliedCount += 1
+			end
+		end
+
+		if totalOwned > alreadyAppliedCount then
+			table.insert(appliedEssences, pendingEssence)
+			updateChanceDisplay()
+			refreshEssenceDropdown()
+
+			ApplyEssenceButton.Text = "Applied!"
+			task.wait(0.5)
+			if SuccessChanceLabel.Text ~= "Chance: 100.0%" then
+				ApplyEssenceButton.Text = "Apply"
+			else
+				ApplyEssenceButton.Text = "Max Chance"
+				ApplyEssenceButton.Active = false
+				ApplyEssenceButton.AutoButtonColor = false
+			end
+		else
+			CreateNotification("Cannot Apply", "Not enough " .. pendingEssence .. " available.", 12900311562)
+		end
+	end)
+
 	---- Categories ---------------------------------------------------------------------
 
 	local InventoryList = MainFrame.Display.Content.ScrollingFrame
@@ -655,7 +756,7 @@ return function(Gui)
 		Frame.Header.Text = Name
 		Frame.Header.TextColor3 = CategoryInfo.Color
 		Frame.Items.BackgroundColor3 = CategoryInfo.Color
-		
+
 		Frame.LayoutOrder = CategoryInfo.LayoutOrder
 		Frame.Visible = false
 		Frame.Parent = InventoryList
@@ -673,10 +774,11 @@ return function(Gui)
 		end
 
 		Frame.Items.ChildAdded:Connect(function(Child)
-			Child:GetPropertyChangedSignal("Visible"):Connect(function()
-				Frame.Visible = CountVisibleItems() > 0
-			end)
-
+			if Child:IsA("GuiObject") then
+				Child:GetPropertyChangedSignal("Visible"):Connect(function()
+					Frame.Visible = CountVisibleItems() > 0
+				end)
+			end
 			Frame.Visible = CountVisibleItems() > 0
 		end)
 
@@ -699,7 +801,7 @@ return function(Gui)
 		CategorySlot.BackgroundColor3 = Primary
 		CategorySlot.TextColor3 = Secondary
 
-		CategorySlot.Text = string.sub(Name, 0, 1)
+		CategorySlot.Text = string.sub(tostring(Name), 0, 1)
 
 		CategorySlot.Activated:Connect(function()
 			local AbsolutePosition = FindClosestPosition(Frame)
@@ -744,9 +846,42 @@ return function(Gui)
 	OnUpdatedCanvasPosition(RecentClosestFrame)
 
 	---- Setup ---------------------------------------------------------------------
-	
+
 	local isOpen = false
-	
+
+	-- Helper function to create or reuse a sub-category frame
+	local function GetOrCreateSubCategory(MainCategoryFrame, SubCategoryName, IsDefault)
+		local Container = MainCategoryFrame.Items
+		local SubFrameName = "Sub_" .. SubCategoryName
+		local SubFrame = Container:FindFirstChild(SubFrameName)
+
+		if not SubFrame then
+			SubFrame = script:WaitForChild("SubCategoryTemplate"):Clone()
+			SubFrame.Name = SubFrameName
+
+			local Header = SubFrame:FindFirstChild("Header")
+			local ItemsFrame = SubFrame:FindFirstChild("Items")
+
+			if Header then
+				if MainCategoryFrame:FindFirstChild("Header") then
+					Header.TextColor3 = MainCategoryFrame.Header.TextColor3
+				end
+			end
+
+			if IsDefault then
+				-- Hide header for default/nil categories
+				if Header then Header.Visible = false end
+			else
+				if Header then Header.Text = SubCategoryName end
+			end
+
+			SubFrame.Visible = true
+			SubFrame.Parent = Container
+		end
+
+		return SubFrame:WaitForChild("Items") 
+	end
+
 	local function OpenCrafting(Shop, ShopConfig)
 		isOpen = true
 		CurrentSmithery = Shop
@@ -755,9 +890,8 @@ return function(Gui)
 		for _, Slot in ItemSlots do
 			Slot.Frame.Visible = false
 		end
-		
+
 		MainFrame.Display.Body.Titlebar.Text = ShopConfig.Name
-		UpdateShopColor(ShopConfig.Color)
 
 		-- Clear current crafting slots
 		for Name, Slot in ItemSlots do
@@ -771,15 +905,82 @@ return function(Gui)
 			ItemSlots[Name] = nil
 		end
 
+		-- Clear existing Sub-Category frames to prevent duplicates
+		for _, CatFrame in CategoryFrames do
+			for _, Child in CatFrame.Items:GetChildren() do
+				if Child:IsA("Frame") and string.sub(Child.Name, 1, 4) == "Sub_" then
+					Child:Destroy()
+				end
+			end
+		end
+
 		local SlotsToOpen = {}
 		ItemSlots = {}
+		local SubCategoryCache = {} -- Track created sub-categories to assign LayoutOrder
+		local SubCategoryOrder = 1
+
+		-- Helper function to generate item info text
+		local function GetItemDescription(Item)
+			local Config = Item.Config
+			local Type = Item.Type
+			local Info = {}
+
+			if Type == "Tool" then
+				if Config.Damage then
+					-- Handle Damage if it's a table or number
+					local Dmg = Config.Damage
+					local Amount = (type(Dmg) == "table" and Dmg[2]) or Dmg
+					if type(Amount) == "number" then
+						table.insert(Info, `DMG: {FormatNumber(Amount, "Suffix")}`)
+					end
+				end
+
+				-- Check for Critical Chance (Default is {1, 50})
+				if Config.CriticalChance then
+					local Chance = Config.CriticalChance
+					if type(Chance) == "table" and (Chance[1] ~= 1 or Chance[2] ~= 50) then
+						local Percent = (Chance[1] / Chance[2]) * 100
+						table.insert(Info, string.format("CC: %g%%", Percent))
+					end
+				end
+
+				if Config.Tier then table.insert(Info, `Tier {Config.Tier}`) end
+				if Config.ManaCost then table.insert(Info, `MC: {Config.ManaCost}`) end
+				if Config.Cooldown then table.insert(Info, `AS: {Config.Cooldown}s`) end
+
+			elseif Type == "Armor" or Type == "Accessory" or Type == "Orb" then
+				if (Config.Health or 0) > 0 then table.insert(Info, `+{FormatNumber(Config.Health, "Suffix")} HP`) end
+				if (Config.WalkSpeed or 0) > 0 then table.insert(Info, `+{Config.WalkSpeed} WS`) end
+				if (Config.JumpPower or 0) > 0 then table.insert(Info, `+{Config.JumpPower} JP`) end
+				if (Config.Mana or 0) > 0 then table.insert(Info, `+{Config.Mana} Mana`) end
+
+				if Type ~= "Accessory" and Config.Defense then
+					local Def = Config.Defense
+					if type(Def) == "number" and Def > 0 then
+						table.insert(Info, `+{Def} Def`)
+					elseif type(Def) == "table" and Def[2] and type(Def[2]) == "number" and Def[2] > 0 then
+						table.insert(Info, `+{Def[2]} {Def[1]} Def`)
+					end
+				end
+
+				if Type == "Orb" and Config.Damage then
+					local Dmg = Config.Damage
+					if type(Dmg) == "number" and Dmg > 0 then
+						table.insert(Info, `DMG: {FormatNumber(Dmg, "Suffix")}`)
+					end
+				end
+
+			elseif Type == "Consumable" or Type == "Material" or Type == "Spell" then
+				return Config.Tip or "No description."
+			end
+
+			return table.concat(Info, ", ")
+		end
 
 		-- Add items to the crafting ui
-		-- We're doing it this way because hint hint some items have unique level reqs
-		for _, Data in ShopConfig.Smithery do
+		for index, Data in ipairs(ShopConfig.Smithery) do
 			local ItemName = Data.Item[2]
 			local ItemCategory = Data.Item[1]
-			local ItemLevel = Data.Level
 
 			local Item = ContentLibrary[ItemCategory][ItemName]
 			local ItemConfig = Item.Config
@@ -789,32 +990,53 @@ return function(Gui)
 			local Frame = script.SlotTemplate:Clone()
 			Frame.Name = ItemName
 			Frame.ItemName.Text = ItemName
-			Frame.ItemLevel.Text = `Level <b>{FormatNumber(ItemLevel, "Suffix")}</b>`
-			
+
+			Frame.ItemLevel.Text = GetItemDescription(Item)
+			Frame.ItemLevel.Visible = true 
+
 			if ItemConfig.IconId then
 				Frame.ItemIcon.Label.Image = tonumber(ItemConfig.IconId) and `rbxassetid://{ItemConfig.IconId}` or ItemConfig.IconId
 			end
 			Frame.Visible = false
-			Frame.Parent = CategoryFrames[Item.Type].Items
+
+			-- Determine Sub-Category Name
+			local SubType = Data.Category
+			local IsDefault = false
+
+			if not SubType then
+				SubType = "General" 
+				IsDefault = true
+			end
+
+			-- Get the Grid Container for this sub-category
+			local TargetGrid = GetOrCreateSubCategory(CategoryFrames[Item.Type], SubType, IsDefault)
+
+			-- Handle LayoutOrder for the Sub-Category Header itself
+			local CacheKey = Item.Type .. "_" .. SubType
+			if not SubCategoryCache[CacheKey] then
+				SubCategoryCache[CacheKey] = true
+				-- Find the parent frame (the Sub-Category Container)
+				local SubFrame = TargetGrid.Parent 
+				SubFrame.LayoutOrder = SubCategoryOrder
+				SubCategoryOrder += 1
+			end
+
+			-- Parent the slot
+			Frame.Parent = TargetGrid
 
 			local Category = {Item = Item, Data = Data, Frame = Frame}
 			local Primary, Secondary, Tertiary = UpdateSlot(Category)
 
 			local Connections = SetTooltipListener(Frame.ItemIcon, Item.Instance, Primary, Secondary)
 			Category.Connections = Connections
-			Category.Connections[#Category.Connections + 1] = Level.Changed:Connect(function()
-				UpdateSlot(Category)
-			end)
 
 			Frame.Button.Activated:Connect(function()
 				local ItemValue = ItemsFolder:WaitForChild(ItemCategory):FindFirstChild(ItemName)
-				local ItemOwned = ItemValue and not (ItemValue:IsA("NumberValue") and ItemValue.Value > 0)
-				local ItemLocked = Level.Value < ItemLevel
-				
+
 				local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Item.Type].IsStackable
 				local isForceLocked = ItemValue and (not IsStackable or not CraftMultiple) and not (ItemValue:IsA("NumberValue") and ItemValue.Value < 1)
-				
-				if not isForceLocked and not ItemLocked then
+
+				if not isForceLocked then
 					OpenPopupFrame(Item, Data)
 				end
 			end)
@@ -824,27 +1046,19 @@ return function(Gui)
 			end)
 
 			ItemSlots[ItemName] = Category
-			table.insert(SlotsToOpen, Category)
+
+			Frame.LayoutOrder = index
+			Frame.Visible = true
 		end
 
-		-- Sort the slots by item level
-		table.sort(SlotsToOpen, function(A, B)
-			return A.Data.Level < B.Data.Level
-		end)
-
-		for LayoutOrder, Slot in SlotsToOpen do
-			Slot.Frame.LayoutOrder = LayoutOrder
-			Slot.Frame.Visible = true
-		end
-		
 		MainFrame.Display.Content.ScrollingFrame.CanvasSize = UDim2.fromOffset(0, MainFrame.Display.Content.ScrollingFrame.UIListLayout.AbsoluteContentSize.Y)
 
 		Gui.Enabled = true
 		Gui.Padding.PaddingTop = UDim.new(0, 50)
-		
+
 		ClosePopupFrame()
 		SetCanvasGroupVisibility(MainFrame, true)
-		
+
 		Tween:Play(Gui.Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
 	end
 
@@ -855,12 +1069,12 @@ return function(Gui)
 
 		ClosePopupFrame()
 		SetCanvasGroupVisibility(MainFrame, false)
-		
+
 		Tween:Play(Gui.Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 50)})
-		
+
 		return true
 	end
-	
+
 	local function RequestCheck()
 		return isOpen
 	end

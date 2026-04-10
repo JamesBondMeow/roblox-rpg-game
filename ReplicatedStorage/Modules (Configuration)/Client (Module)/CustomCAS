@@ -27,7 +27,7 @@ local CustomCAS = {}
 local ActiveCooldowns = {}
 local ActiveKeybindInputs = {}
 
-local RelevancyKeybindSpaces = {"Q", "R", "F", "Z", "X", "C", "V", "G", "B", "Y", "H", "N", "U", "J", "M", "I", "K", "O", "L", "P"}
+local RelevancyKeybindSpaces = {"Q", "R", "F", "Z", "X", "C", "V", "G", "B", "Y", "H", "N", "U", "J", "M", "K", "O", "L", "P"}
 local KeybindChanged = Instance.new("BindableEvent")
 
 local isNotKeybind = (UserInputService.GamepadEnabled and not RunService:IsStudio()) or UserInputService.TouchEnabled

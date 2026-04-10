@@ -1,0 +1,203 @@
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+--> References
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+local RemoveItemWithAmount = require(ServerStorage.Modules.Server.removeItemWithAmount)
+
+--> Variables
+local Remotes = {}
+
+--------------------------------------------------------------------------------
+-- Helpers for dealing with Compound Names directly to bypass GiveItemWithAmount issues
+
+local function ParseCompoundName(compoundName)
+	local split = string.split(tostring(compoundName), "|")
+	local baseName = split[1]
+	local enchants = {}
+	for i = 2, #split do table.insert(enchants, split[i]) end
+	return baseName, enchants
+end
+
+local function GetItemCategory(BaseName)
+	for Cat, Items in pairs(ContentLibrary) do
+		if Items[BaseName] then return Cat, Items[BaseName] end
+	end
+	return nil, nil
+end
+
+local function ReplaceCompoundItem(Player, OldCompound, NewCompound, EnchantsAttr, Category, BaseItem)
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	local Folder = pData.Items[Category]
+
+	-- DataStore Math
+	if Folder:FindFirstChild(OldCompound) then
+		Folder[OldCompound].Value -= 1
+		if Folder[OldCompound].Value <= 0 then Folder[OldCompound]:Destroy() end
+	end
+
+	local NewStat = Folder:FindFirstChild(NewCompound)
+	if NewStat then NewStat.Value += 1 else
+		NewStat = Instance.new("NumberValue")
+		NewStat.Name = NewCompound
+		NewStat.Value = 1
+		NewStat.Parent = Folder
+	end
+
+	-- Physical Tool Math
+	if Category == "Tool" then
+		local removedFromInv = false
+		local removedFromChar = false
+		local removedFromSG = false
+
+		-- Helper to safely sort and find the old physical tool to destroy
+		local function safelyRemoveOldTool(location, flag)
+			if flag or not location then return flag end
+			for _, tool in ipairs(location:GetChildren()) do
+				if tool.Name == BaseItem.Config.Name then
+					local eAttr = tool:GetAttribute("Enchantments")
+					local key = tool.Name
+					if eAttr and eAttr ~= "" then
+						local encs = string.split(eAttr, ",")
+						table.sort(encs) -- MUST sort to match the DataStore format
+						key = key .. "|" .. table.concat(encs, "|")
+					end
+
+					if key == OldCompound then 
+						tool:Destroy() 
+						return true
+					end
+				end
+			end
+			return flag
+		end
+
+		removedFromInv = safelyRemoveOldTool(Player.Backpack, removedFromInv)
+		removedFromChar = safelyRemoveOldTool(Player.Character, removedFromChar)
+		removedFromSG = safelyRemoveOldTool(Player:FindFirstChild("StarterGear"), removedFromSG)
+
+		-- Give new physical instance
+		local bpClone = BaseItem.Instance:Clone()
+		local sgClone = BaseItem.Instance:Clone()
+
+		if EnchantsAttr and EnchantsAttr ~= "" then
+			bpClone:SetAttribute("Enchantments", EnchantsAttr)
+			sgClone:SetAttribute("Enchantments", EnchantsAttr)
+		end
+
+		bpClone.Parent = Player.Backpack
+		sgClone.Parent = Player:FindFirstChild("StarterGear")
+	end
+end
+
+--------------------------------------------------------------------------------
+
+function Remotes:OnEvent(Player, ItemCompoundName, TomeName) 
+	if not ItemCompoundName or not TomeName then return false, "Invalid arguments" end
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	if not pData then return false, "Data missing" end
+
+	-- 1. Parse Names
+	local ItemBaseName, CurrentEnchants = ParseCompoundName(ItemCompoundName)
+	local TomeBaseName, _ = ParseCompoundName(TomeName)
+
+	-- 2. Validate Item Category
+	local Category, BaseItem = GetItemCategory(ItemBaseName)
+	if not Category or not BaseItem then return false, "Item not found" end
+
+	-- Verify ownership of base item compound
+	local itemStat = pData.Items[Category]:FindFirstChild(ItemCompoundName)
+	if not itemStat or itemStat.Value < 1 then return false, "You do not own this item." end
+
+	-- 3. Parse Tome & Validate Ownership
+	local TomeContent = ContentLibrary.Material[TomeName]
+	if not TomeContent or not TomeContent.Config.EnchantmentData then return false, "Invalid Tome." end
+	if CountTotalCopies(TomeContent, Player) < 1 then return false, "You do not own this tome." end
+
+	local NewEnchantData = TomeContent.Config.EnchantmentData
+	local NewEnchantId = NewEnchantData.Id
+
+	-- 4. Rules: ValidOn
+	local isValid = false
+	if NewEnchantData.ValidOn then
+		local specificTags = {"Sword", "Pickaxe", "Sickle", "Helmet", "Pauldron", "Chestplate"}
+		local categoryTags = {"Melee", "Magic"}
+
+		local hasSpecific, hasCategory = false, false
+		for _, v in ipairs(NewEnchantData.ValidOn) do
+			if table.find(specificTags, v) then hasSpecific = true end
+			if table.find(categoryTags, v) then hasCategory = true end
+		end
+
+		local itemSpecific = BaseItem.Config.ToolType or (BaseItem.Config.Type == "Tool" and BaseItem.Config.WeaponType == "Melee" and "Sword") or BaseItem.Config.ArmorType
+		local itemCat = BaseItem.Config.WeaponType
+		local itemBase = BaseItem.Config.Type
+
+		if hasSpecific then
+			isValid = (itemSpecific ~= nil) and table.find(NewEnchantData.ValidOn, itemSpecific) ~= nil
+		elseif hasCategory then
+			isValid = (itemCat ~= nil) and table.find(NewEnchantData.ValidOn, itemCat) ~= nil
+		else
+			isValid = (itemBase ~= nil) and table.find(NewEnchantData.ValidOn, itemBase) ~= nil
+		end
+	else
+		isValid = true
+	end
+
+	if not isValid then return false, "This enchantment cannot be applied to this item type." end
+
+	-- 5. Rules: Max 2
+	if #CurrentEnchants >= 2 then return false, "This item has reached the maximum of 2 enchantments." end
+
+	-- 6. Rules: Curse Limit & No Duplicates (Families)
+	local TomeBaseConfig = ContentLibrary.Material[TomeBaseName] and ContentLibrary.Material[TomeBaseName].Config
+	local isCurse = TomeBaseConfig and TomeBaseConfig.Curse == true
+	local tomeFamily = (NewEnchantData and NewEnchantData.Family) or string.split(TomeBaseName, "_")[1]
+
+	for _, enchantId in ipairs(CurrentEnchants) do
+		local existingConfig = ContentLibrary.Material[enchantId] and ContentLibrary.Material[enchantId].Config
+
+		-- Fallback search if the material name doesn't perfectly match the ID
+		if not existingConfig then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					existingConfig = matData.Config
+					break
+				end
+			end
+		end
+
+		if existingConfig then
+			if isCurse and existingConfig.Curse then
+				return false, "Exploit Detected: This item is already cursed!"
+			end
+
+			local existingFamily = (existingConfig.EnchantmentData and existingConfig.EnchantmentData.Family) or string.split(enchantId, "_")[1]
+			if existingFamily == tomeFamily then
+				return false, "Exploit Detected: An enchantment of this family is already applied!"
+			end
+		end
+	end
+
+	-- 7. Execute: Consume Tome
+	RemoveItemWithAmount(Player, "Material", TomeName, 1)
+
+	-- 8. Build New Identifier
+	table.insert(CurrentEnchants, NewEnchantId)
+	table.sort(CurrentEnchants) -- Alphabetical sorting for consistent stacking
+
+	local NewCompoundName = ItemBaseName .. "|" .. table.concat(CurrentEnchants, "|")
+	local NewEnchantsAttr = table.concat(CurrentEnchants, ",")
+
+	-- 9. Replace Item
+	ReplaceCompoundItem(Player, ItemCompoundName, NewCompoundName, NewEnchantsAttr, Category, BaseItem)
+
+	return true, "Item Enchanted!"
+end
+
+return Remotes

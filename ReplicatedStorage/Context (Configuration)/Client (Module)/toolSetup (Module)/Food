@@ -37,10 +37,9 @@ return function(Tool)
 	local toolSystem = ToolSystem.new(Tool)
 	
 	-- Character
-	local Character = Player.Character or Player.CharacterAdded:Wait()
-
-	local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
-	local Animator = Humanoid:WaitForChild("Animator") :: Animator
+	local Character
+	local Humanoid
+	local Animator
 	
 	--------------------------------------------------------------------------------
 
@@ -124,10 +123,28 @@ return function(Tool)
 	end)
 	
 	Tool.Equipped:Connect(function()
+		-- Dynamically fetch the ALIVE character
+		Character = Tool.Parent
+		Humanoid = Character and Character:FindFirstChild("Humanoid")
+		Animator = Humanoid and Humanoid:FindFirstChild("Animator")
+
+		-- Force state reset to prevent "Stuck" tools
+		Tool.Enabled = true
+		toolSystem.LastDisable = 0
+
 		toolSystem:Equipped()
 	end)
 
 	Tool.Unequipped:Connect(function()
 		toolSystem:Unequipped()
+		-- Clear the shared cooldown so it doesn't brick the next life
+		shared.FoodCooldown[Tool.Name] = nil
+	end)
+
+	-- Ancestry cleanup for death/reset
+	Tool.AncestryChanged:Connect(function(_, newParent)
+		if newParent == nil then
+			shared.FoodCooldown[Tool.Name] = nil
+		end
 	end)
 end

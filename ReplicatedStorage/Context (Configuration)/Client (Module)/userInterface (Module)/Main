@@ -1,1475 +1,1049 @@
 --[[
-	Inventory
+	Main
 	
-	InventoryGuiScript handles the player inventory - this includes everything relating to the
-	inventory system.
+	Handles most of the primary UI and a few small tidbits, handling for Attributes UI visibility is housed here
+	*If you wish to modify the statistics frame, look for the folder under this script
 ]]
 
 --> Services
-local ContextActionService = game:GetService("ContextActionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CollectionService = game:GetService("CollectionService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local GuiService = game:GetService("GuiService")
-local StarterGui = game:GetService("StarterGui")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GroupService = game:GetService("GroupService")
+local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 --> Player
 local Player = Players.LocalPlayer
-
 local pData = ReplicatedStorage:WaitForChild("PlayerData"):WaitForChild(Player.UserId)
-local Items = pData:WaitForChild("Items")
+
+local Stats = pData:WaitForChild("Stats")
+
+-- We don't rely on these permanent references for Values anymore to avoid stale object bugs
+-- We just keep them for initial setup/wait
+local _XP = Stats:WaitForChild("XP")
+local _Gold = Stats:WaitForChild("Gold")
+local _Level = Stats:WaitForChild("Level")
+local _Kills = Stats:WaitForChild("Kills")
+
+--> References
+local Camera = workspace.CurrentCamera
 
 --> Dependencies
-local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
-local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
 local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
-local Maid = require(ReplicatedStorage.Modules.Shared.Maid)
-local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
 local ColorModule = require(ReplicatedStorage.Modules.Shared.Color)
+
 local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
-
-local SetTooltipListener = require(ReplicatedStorage.Modules.Client.setTooltipListener)
 local TooltipController = require(ReplicatedStorage.Modules.Client.TooltipController)
+local SetCanvasGroupVisibility = require(ReplicatedStorage.Modules.Client.setCanvasGroupVisibility)
 
-local ActivatedCallbacks = require(ReplicatedStorage.Modules.Client.ActivatedCallbacks)
-local KeybindSystem = require(ReplicatedStorage.Modules.Libraries.Keybinds)
+local ProductLib = require(ReplicatedStorage.Modules.Shared.Product)
+local getPlayerLuck = require(ReplicatedStorage.Modules.Shared.getPlayerLuck)
 
 local GameConfig = require(ReplicatedStorage.GameConfig)
+
+local StatisticModules = {}
+for _, Module in script.Statistics:GetChildren() do
+	StatisticModules[Module.Name] = require(Module)
+end
+
+--> Variables
+local XPPerLevel = GameConfig.XPPerLevel
+local ActivatedColor = GameConfig.PrimaryColor
+local DeactivatedColor = GameConfig.SecondaryColor
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
 return function(Gui)
-	if not GameConfig.BackpackEnabled then
-		Gui:Destroy()
-		return
-	end
-	
 	--> References
-	local Main = Gui:WaitForChild("Main")
-	local Hotbar = Main:WaitForChild("Hotbar")
-	local Inventory = Main:WaitForChild("Inventory")
-	local InventoryItems = Inventory:WaitForChild("Items")
-	local InventoryFrame = InventoryItems:WaitForChild("Frame")
-	local InventoryList = InventoryItems:WaitForChild("ScrollingFrame")
-	
-	local HideCanvas = Main:WaitForChild("HideCanvas")
-	local TooltipFrame = Player.PlayerGui:WaitForChild("Tooltip"):WaitForChild("Frame")
-	
+	local BottomLeft = Gui:WaitForChild("BottomLeft")
+	local BottomRight = Gui:WaitForChild("BottomRight")
+	local BottomCenter = Gui:WaitForChild("BottomCenter")
+
+	local OverheadFrame = BottomCenter:WaitForChild("Overhead")
+	local ExperienceFrame = BottomCenter:WaitForChild("Experience")
+
+	local MainFrame = BottomCenter:WaitForChild("Main")
+	local TakenLabel = MainFrame:WaitForChild("DamageTaken")
+
+	local XPFrame = ExperienceFrame:WaitForChild("XP")
+	local XPBar = XPFrame:WaitForChild("XPBar")
+	local XPFrameTicks = XPBar:WaitForChild("Ticks")
+	local XPFrameFill = XPBar:WaitForChild("Fill")
+
+	local MPFrame = MainFrame:WaitForChild("MP")
+	local ManaBar = MPFrame:WaitForChild("ManaBar")
+	local MPFrameTicks = ManaBar:WaitForChild("Ticks")
+	local MPFrameFill = ManaBar:WaitForChild("Fill")
+
+	local HPFrame = MainFrame:WaitForChild("HP")
+	local HealthBar = HPFrame:WaitForChild("HealthBar")
+	local HPFrameTicks = HealthBar:WaitForChild("Ticks")
+	local HPFrameFill = HealthBar:WaitForChild("Fill")
+
+	local WalkSpeedFrame = OverheadFrame:WaitForChild("WalkSpeed")
+	local JumpPowerFrame = OverheadFrame:WaitForChild("JumpPower")
+	local GoldFrame = OverheadFrame:WaitForChild("Gold")
+	local KillsFrame = OverheadFrame:WaitForChild("Kills")
+	local LuckFrame = OverheadFrame:WaitForChild("Luck")
+
+	local StatisticsLabel = BottomRight:WaitForChild("StatisticsLabel")
+	local Gained = BottomCenter:WaitForChild("Experience"):WaitForChild("Gained")
+
+	local LevelValue = MainFrame:WaitForChild("Level"):WaitForChild("LevelValue")
+
 	--> Variables
-	local BackpackItemAdded = Instance.new("BindableEvent")
-	local BackpackItemRemoved = Instance.new("BindableEvent")
-	local BackpackItemEquipped = Instance.new("BindableEvent")
-	local BackpackItemUnequipped = Instance.new("BindableEvent")
-	local EquippedTool
+	local SustainedDamageTaken = 0
+	local PlayingHealthTweens = {}
 
-	local Slots = {} :: {Slot}
-	local HotbarSlots = {} :: {HotbarSlot}
-	local InventoryOpen = false
+	local PreviousHealth = 0
+	local DamageClock = os.clock()
 
-	local StartSlot, StartParent -- Messy way to deal with this, but it work oki ^-^
-	local Dragging = false
-
-	--> Configuration
-	local SlotTextColor = Color3.fromRGB(255, 255, 255)
-
-	local SlotColor = GameConfig.BackgroundColor
-	local EquippedSlotColor = GameConfig.PrimaryColor
-	local EquippedSlotTextColor = GameConfig.SecondaryColor
-	local UseArmorBustShot = GameConfig.InventoryUsesArmorBustShot
-	
-	local EquippedSlotPosition = -4
-	
-	local MAX_HOTBAR_SLOTS = (UserInputService.TouchEnabled and GameConfig.MobileUsesLessSlots and 3) or GameConfig.PCAndConsoleMaxSlots
-	
-	--------------------------------------------------------------------------------
-	
-	InventoryFrame.BackgroundColor3 = GameConfig.SecondaryColor
-	InventoryList.ScrollBarImageColor3 = GameConfig.PrimaryColor
-	
-	Inventory.BackgroundColor3 = GameConfig.BackgroundColor
-	InventoryItems.BackgroundColor3 = GameConfig.BackgroundColor
-	Inventory:WaitForChild("Categories").BackgroundColor3 = GameConfig.BackgroundColor
-
-	type Slot = {
-		ItemInstance: Instance,
-		ItemType: string,
-		ItemConfig: ContentLibrary.ItemConfig?,
-		Frame: Frame,
-		LayoutOrder: number?,
-		HotbarNumber: number?,
-		PushToHotbar: (Slot, HotbarSlot) -> (),
-		PushToInventory: (Slot) -> (),
-		ExchangeWith: (Slot) -> (),
-		Destroy: (Slot) -> ()
+	local Previous = {
+		["XP"] = _XP.Value,
+		["Gold"] = _Gold.Value,
 	}
 
-	type HotbarSlot = {
-		Number: number,
-		Frame: Frame,
-		ActiveSlot: Slot?
-	}
-
-	type ArmorSlot = {
-		Item: Model,
-		ItemConfig: ContentLibrary.ItemConfig,
-		Frame: Frame
-	}
+	local SustainedStatChange = {}
+	local PlayingStatTweens = {}
+	local UpdatedStats = {}
 
 	--------------------------------------------------------------------------------
 
-	-- Checks to see if there's a slot over the cursor. If there is, return the slot type, as well as the slot object.
-	-- SlotType can be either "Hotbar", "Inventory", or nil
-	-- Slot is the slot object, either a HotbarSlot or a Slot object.
-	local function GetSlotOverCursor(): (("Hotbar" | "Inventory")?, Slot?)
-		local MouseLocation = UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
-		local GuiObjects = Player.PlayerGui:GetGuiObjectsAtPosition(MouseLocation.X, MouseLocation.Y)
-		
-		local SlotType, FoundSlot
-		for _, GuiObject in GuiObjects do
-			if StartSlot and GuiObject == StartSlot.Frame then
-				continue -- Ignore the frame being dragged
-			end
-
-			if CollectionService:HasTag(GuiObject, "InventorySlot") then
-				local SlotIndex = GuiObject:FindFirstChild("SlotIndex")
-				if SlotIndex then
-					SlotType = "Inventory"
-					FoundSlot = Slots[SlotIndex.Value]
-					break
-				end
-			elseif CollectionService:HasTag(GuiObject, "FakeHotbarSlot") then
-				local HotbarNumber = GuiObject:GetAttribute("SlotNumber")
-				SlotType = "Hotbar"
-				FoundSlot = HotbarSlots[HotbarNumber]
-			end
-		end
-		
-		if FoundSlot and FoundSlot.ItemInstance 
-			and GameConfig.Categories[FoundSlot.ItemType].NotEquippable 
-		then
-			return
-		end
-
-		return SlotType, FoundSlot
-	end
-
-	-- Returns the firstmost available HotbarSlot
-	local function GetNextHotbarSlot(): HotbarSlot?
-		local Slot
-		
-		for _, HotbarSlot in HotbarSlots do
-			if not HotbarSlot.ActiveSlot then
-				Slot = HotbarSlot
-				break
-			end
-		end
-		
-		return Slot
-	end
-
-	local function isCursorOverInventory(): boolean
-		local MouseLocation = UserInputService:GetMouseLocation()
-		local AbsolutePosition = InventoryItems.AbsolutePosition
-		local AbsoluteSize = InventoryItems.AbsoluteSize
-
-		local withinX = MouseLocation.X >= AbsolutePosition.X and MouseLocation.X < (AbsolutePosition.X + AbsoluteSize.X)
-		local withinY = MouseLocation.Y >= AbsolutePosition.Y and MouseLocation.Y < (AbsolutePosition.Y + AbsoluteSize.Y)
-
-		return withinX and withinY
-	end
-
-	local function isSlotInHotbar(Slot: Slot): boolean
-		return Slot.HotbarNumber ~= nil
-	end
-
-	local function isSlotInInventory(Slot: Slot): boolean
-		return not isSlotInHotbar(Slot)
-	end
-
-	local function UpdateSlotState(Slot: Slot, Equipped: boolean)
-		if not Slot or not Slot.Frame.Parent then
-			return
-		end
-
-		local Character = Player.Character
-		
-		local Humanoid = Character and Character:FindFirstChildWhichIsA("Humanoid")
-		if not Humanoid or Humanoid.Health <= 0 or (Slot.ItemInstance:IsA("Tool") and Slot.ItemInstance.Parent ~= Character) then
-			Equipped = false
-		end
-
-		local DeactivateOverride = Slot.DeactivateOverride
-		local ActivateOverride = Slot.ActivateOverride
-
-		local EquippedSlotColor = ActivateOverride or Slot.Primary
-		local EquippedSlotTextColor = DeactivateOverride or Slot.Background
-		local SlotColor = DeactivateOverride or SlotColor
-		
-		Slot.Equipped = Equipped
-		
-		local Tween = Tween:Play(Slot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, Equipped and EquippedSlotPosition or 0)})
-		Slot.EquippingTween = Tween
-		
-		local isCustomColor = Slot.Custom
-		if isCustomColor then
-			Slot.Custom.Frame.BackgroundColor3 = Equipped and Color3.fromRGB(255, 255, 255) 
-				or Color3.fromRGB(109, 109, 109)
-			
-			Slot.Custom.GroupTransparency = Equipped and 0 or 0.2
-		elseif not isCustomColor then
-			if Equipped then
-				Slot.BG.BackgroundColor3 = EquippedSlotColor
-				Slot.Frame.HotbarNum.UIStroke.Color = EquippedSlotColor
-				Slot.Frame.HotbarNum.TextColor3 = EquippedSlotTextColor
-				Slot.Frame.ItemName.UIStroke.Color = EquippedSlotColor
-				Slot.Frame.ItemName.TextColor3 = EquippedSlotTextColor
-				Slot.Frame.Amount.TextColor3 = EquippedSlotTextColor
-				Slot.Frame.Amount.UIStroke.Color = EquippedSlotColor
-			elseif not Equipped then
-				Slot.BG.BackgroundColor3 = SlotColor
-				Slot.Frame.HotbarNum.UIStroke.Color = SlotColor
-				Slot.Frame.HotbarNum.TextColor3 = SlotTextColor
-				Slot.Frame.ItemName.UIStroke.Color = SlotColor
-				Slot.Frame.ItemName.TextColor3 = SlotTextColor
-				Slot.Frame.Amount.TextColor3 = SlotTextColor
-				Slot.Frame.Amount.UIStroke.Color = SlotColor
-			end
-		end
-	end
-
-	local function UpdateHotbarVisibility()
-		local Visible = false
-		for _, HotbarSlot in HotbarSlots do
-			if HotbarSlot.ActiveSlot then
-				Visible = true
-			end
-		end
-		
-		for _, Frame in Hotbar:GetChildren() do
-			if string.find(Frame.Name, "FullSlot") and #Frame:GetChildren() == 0 then
-				Frame.Visible = false
-			end
-		end
-
-		Hotbar.Visible = Visible or InventoryOpen
-	end
-
-	---- SLOTS ---------------------------------------------------------------------
-
-	local Slot = {}
-	Slot.__index = Slot
-	
-	local CategoryFrames = {}
-	local CategorySlots = {}
-	
-	local RecentClosestFrame = nil
-	local ForcedCategoryFocus = {nil, os.clock()}
-	
-	local function FindClosestPosition(Frame)
-		local AbsolutePosition = 0
-		for _, NewFrame in CategoryFrames do
-			if NewFrame.Visible and NewFrame.LayoutOrder < Frame.LayoutOrder then
-				AbsolutePosition += NewFrame.AbsoluteSize.Y + 8
-			end
-		end
-
-		return AbsolutePosition
-	end
-	
-	local function OnUpdatedCanvasPosition(Force)
-		local CanvasPositionY = InventoryList.CanvasPosition.Y
-		local CanvasSizeY = InventoryList.AbsoluteSize.Y
-
-		local isForced = ForcedCategoryFocus[1] 
-			and os.clock() - ForcedCategoryFocus[2] <= (0.5 + 0.03)
-
-		local ClosestFrame = Force and CategoryFrames[Force]
-		local ClosestPosition = math.huge
-
-		if not ClosestFrame then
-			for Name, Frame in CategoryFrames do
-				if Frame.Visible then
-					local AbsolutePosition = FindClosestPosition(Frame)
-					local Difference = math.abs(CanvasPositionY - AbsolutePosition)
-					
-					if AbsolutePosition < ClosestPosition and (AbsolutePosition >= CanvasPositionY or Difference < 8) then
-						ClosestPosition = AbsolutePosition
-						ClosestFrame = Frame
-					end
-				end
-			end
-		end
-
-		if isForced or RecentClosestFrame ~= ClosestFrame then
-			for Name, Frame in CategorySlots do
-				local isEnabled = if isForced 
-					then ForcedCategoryFocus[1] == Name 
-					else ClosestFrame and (Name == ClosestFrame.Name)
-
-				Tween:Play(Frame.Frame, {0.5, "Circular"}, {
-					BackgroundColor3 = isEnabled and Frame.Secondary:Lerp(Frame.Primary, 0.15) or Frame.Primary,
-					TextColor3 = isEnabled and Frame.Primary or Frame.Secondary
-				})
-			end
-		end
-
-		RecentClosestFrame = isForced and ForcedCategoryFocus[1] 
-			or ClosestFrame
-	end
-	
-	local ItemTypes = {}
-	for ItemType, Data in GameConfig.Categories do
-		if not Data.ShowInInventory then
-			continue
-		end
-		
-		ItemTypes[ItemType] = {
-			Color = Data.Color,
-			LayoutOrder = Data.LayoutOrder,
-			OnActivated = ActivatedCallbacks[ItemType] or ActivatedCallbacks.Default,
-		}
-	end
-
-	for Name, CategoryInfo in ItemTypes do
-		local Frame = script:WaitForChild("CategoryTemplate"):Clone()
-		Frame.Name = Name
-		Frame.Header.Text = Name
-		Frame.Header.TextColor3 = CategoryInfo.Color
-		Frame.Items.BackgroundColor3 = CategoryInfo.Color
-
-		local IconSize = GameConfig.Categories[Name].IconSize
-		if IconSize then
-			Frame.Items.UIGridLayout.CellSize = UDim2.fromOffset(IconSize, IconSize)
-		end
-
-		Frame.LayoutOrder = CategoryInfo.LayoutOrder
-		Frame.Visible = false
-		Frame.Parent = InventoryList
-		
-		local function CountVisibleItems()
-			local Visible = 0
-			
-			for _, Frame in Frame.Items:GetChildren() do
-				if Frame:IsA("GuiObject") and Frame.Visible then
-					Visible += 1
-				end
-			end
-			
-			return Visible
-		end
-	
-		Frame.Items.ChildAdded:Connect(function(Child)
-			Child:GetPropertyChangedSignal("Visible"):Connect(function()
-				Frame.Visible = CountVisibleItems() > 0
-			end)
-			
-			Frame.Visible = CountVisibleItems() > 0
-		end)
-
-		Frame.Items.ChildRemoved:Connect(function(Child)
-			if Frame.Parent == nil then
-				return
-			end
-
-			Frame.Visible = CountVisibleItems() > 0
-		end)
-		
-		---- Category buttons
-		
-		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(CategoryInfo.Color)
-		
-		local CategorySlot = script.CategorySlot:Clone()
-		CategorySlot.LayoutOrder = CategoryInfo.LayoutOrder
-		CategorySlot.Name = Name
-
-		CategorySlot.BackgroundColor3 = Primary
-		CategorySlot.TextColor3 = Secondary
-		
-		CategorySlot.Text = string.sub(Name, 0, 1)
-
-		CategorySlot.Activated:Connect(function()
-			local AbsolutePosition = FindClosestPosition(Frame)
-			
-			ForcedCategoryFocus = {Frame.Name, os.clock()}
-			OnUpdatedCanvasPosition()
-			
-			Tween:Play(InventoryList, {0.5, "Back", "Out"}, {CanvasPosition = Vector2.new(0, AbsolutePosition)})
-		end)
-		
-		local CategoryButtons = Inventory:WaitForChild("Categories")
-		
-		local function UpdateCategoryFrameVisible()
-			local isVisible = false
-			for _, Frame: GuiObject in CategoryButtons:GetChildren() do
-				if Frame:IsA("GuiObject") and Frame.Visible then
-					isVisible = true
-				end
-			end
-			
-			CategoryButtons.Visible = isVisible
-		end
-		
-		Frame:GetPropertyChangedSignal("Visible"):Connect(function()
-			CategorySlot.Visible = Frame.Visible
-			
-			RecentClosestFrame = nil
-			OnUpdatedCanvasPosition()
-			UpdateCategoryFrameVisible()
-		end)
-		
-		CategorySlot.Parent =CategoryButtons
-		CategorySlot.Visible = Frame.Visible
-		
-		if CategoryInfo.LayoutOrder <= 1 then
-			RecentClosestFrame = Name
-		end
-		
-		CategorySlots[Name] = {Frame = CategorySlot, Primary = Primary, Secondary = Secondary, Background = Background}
-		CategoryFrames[Name] = Frame
-	end
-	
-	InventoryList:GetPropertyChangedSignal("CanvasPosition"):Connect(OnUpdatedCanvasPosition)
-	OnUpdatedCanvasPosition(RecentClosestFrame)
-
-	local function UpdateOwnership(Frame, Item)
-		local Copies = CountTotalCopies(Item)
-		
-		local Amount = Frame:FindFirstChild("Amount")
-		if Amount then
-			Amount.Text = `x{FormatNumber(Copies, "Suffix")}`
-			Amount.Visible = Copies > 1
-		end
-	end
-
-	-- ItemInstance represents the physical instance of an object.
-	-- Ex: Tool instance instead of ContentLibrary.Tool class.
-	-- Ex: Model instance instead of pData.Items.Armor value object used for data saving & replication.
-	function Slot.new(ItemInstance: Instance): Slot
-		local ItemConfig = ItemInstance:WaitForChild("ItemConfig", 1) and require((ItemInstance :: any).ItemConfig)
-		
-		local ItemType = (ItemConfig and ItemConfig.Type) 
-			or (ItemInstance:IsA("Tool") and "Tool")
-		
-		local CategoryInfo = GameConfig.Categories[ItemType]
-		if not CategoryInfo.ShowInInventory or ItemConfig.DontShowInInventory then
-			return
-		end
-		
-		local IconId = ItemConfig and ItemConfig.IconId and (tonumber(ItemConfig.IconId) and `rbxassetid://{ItemConfig.IconId}` or ItemConfig.IconId) 
-			or (ItemInstance:IsA("Tool") and ItemInstance.TextureId)
-			or ""
-		
-		-- Create slot's Frame
-		local Frame = script:WaitForChild(UseArmorBustShot and ItemType == "Armor" and "ArmorSlotTemplate" or "SlotTemplate"):Clone()
-		local ItemIcon = Frame:FindFirstChild("ItemIcon", true) -- Note: We use a custom template for armor, so it can easily use a bust shot.
-		local FrameSize = Hotbar.UIGridLayout.CellSize.Y.Offset
-		
-		Frame.Size = UDim2.fromOffset(FrameSize, FrameSize)
-		Frame.Name = ItemInstance.Name
-		Frame.ItemName.Visible = #IconId == 0
-		Frame.HotbarNum.Visible = false
-		Frame.Visible = true
-		Frame.Parent = CategoryFrames[ItemType].Items
-		
-		local Slot = setmetatable({}, Slot)
-		Slot.Button = Frame:WaitForChild("SlotButton") :: TextButton
-		Slot.BG = Frame:WaitForChild("SlotBackground") :: Frame
-		Slot.BG.BackgroundColor3 = SlotColor
-
-		ItemIcon.Visible = #IconId > 0
-		if ItemIcon.Visible then
-			ItemIcon.Image = IconId
-		else
-			Frame.ItemName.Text = ItemInstance.Name
-		end
-		
-		-- Seasonal items
-		local DeactivateColor, ActivateColor = nil, nil
-		if ItemConfig.CustomBackground then
-			local Custom = Frame:WaitForChild("Custom")
-			Custom.Visible = true
-			
-			local Gradient = ReplicatedStorage.Assets.Gradients:FindFirstChild(ItemConfig.CustomBackground)
-			if Gradient then
-				Custom:FindFirstChild("Gradient"):Destroy()
-				Gradient:Clone().Parent = Custom
-			end
-			
-			Slot.Custom = Custom
-			Slot.BG.Visible = false
-		elseif ItemConfig.SpecialColor then
-			Frame.Canvas.Visible = true
-			Frame.Canvas.GroupColor3 = ItemConfig.SpecialColor
-		
-			local ActivateColor, _, DeactivateColor = ColorModule:ConvertToHSV3(ItemConfig.SpecialColor)
-			Slot.BG.BackgroundColor3 = DeactivateColor
-			Slot.DeactivateOverride = DeactivateColor
-			Slot.ActivateOverride = ActivateColor
-		end
-		
-		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(CategoryInfo.Color)
-		
-		Slot.Primary = Primary
-		Slot.Secondary = Secondary
-		Slot.Background = Background
-
-		-- Copies
-		local InventoryCategory = pData.Items[ItemType] 
-		local InventoryItem = InventoryCategory:WaitForChild(ItemInstance.Name)
-		
-		local ContentItem = ContentLibrary[ItemType][ItemInstance.Name]
-		
-		local UpdateMaid = Maid.new()
-		UpdateOwnership(Frame, ContentItem)
-		
-		UpdateMaid:Add(InventoryCategory.ChildAdded:Connect(function()
-			UpdateOwnership(Frame, ContentItem)
-		end))
-		
-		UpdateMaid:Add(InventoryCategory.ChildRemoved:Connect(function()
-			UpdateOwnership(Frame, ContentItem)
-		end))
-
-		if InventoryItem:IsA("NumberValue") then
-			InventoryItem.Changed:Connect(function()
-				UpdateOwnership(Frame, ContentItem)
-			end)
-		end
-
-		---- Connections (handled by garbage collector)
-		
-		local IsNotEquippable = GameConfig.Categories[ItemType].NotEquippable
-		if IsNotEquippable then
-			Slot.Button.Active = false
-			Slot.Button.AutoButtonColor = false
-		elseif not IsNotEquippable then
-			Slot.Button.Activated:Connect(function()
-				if Dragging then
-					return
-				end
-
-				if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
-					if isSlotInHotbar(Slot) then
-						Slot:PushToInventory()
-					else
-						local HotbarSlot = GetNextHotbarSlot()
-						Slot:PushToHotbar(HotbarSlot or HotbarSlots[MAX_HOTBAR_SLOTS])
-					end
-				elseif not GameConfig.Categories[ItemType].NotEquippable then
-					ItemTypes[ItemType]:OnActivated(Slot)
-				end
-			end)
-		end
-		
-		local PrimaryFrame = Slot.Custom and Slot.Custom.Frame or Slot.BG
-		Slot.Button.MouseEnter:Connect(function()
-			Tween:Play(PrimaryFrame, {0.25, "Circular"}, {Transparency = 0})
-		end)
-		Slot.Button.MouseLeave:Connect(function()
-			Tween:Play(PrimaryFrame, {0.25, "Circular"}, {Transparency = 0.2})
-		end)
-
-		SetTooltipListener(Frame, ItemInstance, Primary, Secondary)
-
-		local ReferenceValue = Instance.new("StringValue")
-		ReferenceValue.Name = "SlotIndex"
-		ReferenceValue.Value = ItemInstance.Name
-		ReferenceValue.Parent = Frame
-
-		CollectionService:AddTag(Frame, "InventorySlot")
-
-		-- Finish creating Slot object
-		Slot.ItemInstance = ItemInstance
-		Slot.ItemType = ItemType
-		Slot.ItemConfig = ItemConfig
-		Slot.Frame = Frame
-		Slot.Maid = UpdateMaid
-
-		Slots[ItemInstance.Name] = Slot
-
-		-- Sort new slot
-		if Slot.SortInventory then
-			Slot.SortInventory()
-		end
-
-		-- Push slot to Hotbar if it was last in it
-		local pData_Hotbar = pData:WaitForChild("Hotbar")
-		for n, HotbarSlot in HotbarSlots do
-			local DataValue = pData_Hotbar:WaitForChild(n)
-			if DataValue.Value == ItemInstance.Name and not HotbarSlots[n].ActiveSlot then
-				Slot:PushToHotbar(HotbarSlots[n])
-				break
-			end
-		end
-		
-		UpdateSlotState(Slot, false)
-
-		return Slot
-	end
-
-	-- This Slot function pushes the Slot to the passed HotbarSlot.
-	function Slot:PushToHotbar(HotbarSlot: HotbarSlot)
-		-- If this slot was previously in a hotbar slot, clear up references & restore the hotbar slot.
-		local OldHotbarSlot = HotbarSlots[self.HotbarNumber]
-		if HotbarSlot and HotbarSlot.ActiveSlot then
-			HotbarSlot.ActiveSlot:PushToInventory()
-		end
-		if OldHotbarSlot then
-			OldHotbarSlot.ActiveSlot = nil
-			OldHotbarSlot.Frame.Visible = InventoryOpen
-			EventModule:FireServer("HotbarItemChanged", OldHotbarSlot.Number, "")
-		end
-		HotbarSlot.ActiveSlot = self
-		HotbarSlot.Frame.Visible = false
-
-		self.HotbarNumber = HotbarSlot.Number
-		--self.Frame.LayoutOrder = HotbarSlot.Number
-		self.Frame.HotbarNum.Text = HotbarSlot.Number
-		self.Frame.HotbarNum.Visible = true
-		
-		local FullSlot = Hotbar:WaitForChild(`FullSlot{HotbarSlot.Number}`)
-		self.Frame.Parent = FullSlot
-		
-		FullSlot.LayoutOrder = HotbarSlot.Number
-		FullSlot.Visible = true
-		
-		EventModule:FireServer("HotbarItemChanged", HotbarSlot.Number, self.ItemInstance.Name)
-		UpdateHotbarVisibility()
-	end
-
-	-- This Slot function pushes the Slot to the inventory.
-	function Slot:PushToInventory()
-		-- If this slot is in a hotbar slot, clear up references & restore the hotbar slot.
-		local HotbarSlot = self.HotbarNumber and HotbarSlots[self.HotbarNumber]
-		if HotbarSlot then
-			HotbarSlot.ActiveSlot = nil
-			HotbarSlot.Frame.Visible = InventoryOpen
-			HotbarSlot.FullSlot.Visible = false
-		end
-
-		self.HotbarNumber = nil
-		self.Frame.LayoutOrder = self.LayoutOrder or 1
-		self.Frame.HotbarNum.Visible = false
-		
-		self.Frame.Parent = CategoryFrames[self.ItemType].Items
-		
-		if HotbarSlot and HotbarSlot.Number then
-			EventModule:FireServer("HotbarItemChanged", HotbarSlot.Number, "")
-		end
-		UpdateHotbarVisibility()
-	end
-
-	-- This Slot function exchanges the place its in with another Slot.
-	function Slot:ExchangeWith(Slot: Slot)
-		-- We save these are variables to keep a reference to them, since we're actively changing them.
-		local StartNumber = self.HotbarNumber
-		local EndNumber = Slot.HotbarNumber
-		local startInHotbar = isSlotInHotbar(self)
-		local endInHotbar = isSlotInHotbar(Slot)
-
-		if not startInHotbar and not endInHotbar then
-			return
-		end
-		
-		Slot:PushToInventory()
-		if EndNumber then
-			self:PushToHotbar(HotbarSlots[EndNumber])
-		end
-		if startInHotbar and endInHotbar then
-			Slot:PushToHotbar(HotbarSlots[StartNumber])
-		end
-	end
-
-	-- This Slot functions destroys the Slot object, as well as any remaining references of it.
-	function Slot:Destroy()
-		if self.Destroyed then
-			return
-		end
-		self.Destroyed = true
-
-		-- This slot is in a hotbar slot. Clear up references & restore the hotbar slot.
-		local HotbarSlot = self.HotbarNumber and HotbarSlots[self.HotbarNumber]
-		if HotbarSlot then
-			HotbarSlot.ActiveSlot = nil
-			HotbarSlot.Frame.Visible = InventoryOpen
-			HotbarSlot.FullSlot.Visible = false
-		end
-
-		self.Maid:Destroy()
-		self.Frame:Destroy()
-		Slots[self.ItemInstance.Name] = nil
-		self.Frame = nil
-		self.ItemInstance = nil
-	end
-
-	-- Function that groups by Level and Name, sorts both of the groups by their sort method,
-	-- then runs through them in order to have a consistent order.
-	-- Tools are sorted by Level if they have an ItemConfig in them with a numerical Level value
-	-- Tools are sorted by Name if they don't have an ItemConfig (say an imported Apple free model)
-	function Slot.SortInventory()
-		local SortByLevel = {}
-		local SortByName = {}
-
-		for _, Slot in Slots do
-			if Slot.ItemConfig and Slot.ItemConfig.Level then
-				table.insert(SortByLevel, Slot)
-			else
-				table.insert(SortByName, Slot)
-			end
-		end
-
-		table.sort(SortByLevel, function(A, B)
-			return A.ItemConfig.Level > B.ItemConfig.Level
-		end)
-
-		table.sort(SortByName, function(A, B)
-			return A.ItemInstance.Name < B.ItemInstance.Name
-		end)
-
-		local ind = 1
-		for _, t in {SortByLevel, SortByName} do
-			for _, Slot in t do
-				Slot.LayoutOrder = ind
-				if not isSlotInHotbar(Slot) then
-					Slot.Frame.LayoutOrder = ind
-				end
-				ind += 1
-			end
-		end
-	end
-
-	Slot.SortInventory()
-
-	---- HOTBAR LOGIC --------------------------------------------------------------
-
-	---- Create blank hotbar slots
-	local KeyboardKeyCodes = {"One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"}
-	for i = 1, MAX_HOTBAR_SLOTS do
-		local EmptySlot = script:WaitForChild("EmptySlotTemplate"):Clone()
-		EmptySlot.Name = tostring(i)
-		EmptySlot.LayoutOrder = i
-		EmptySlot.Visible = false
-		EmptySlot.HotbarNum.Text = "-".. i .."-"
-		EmptySlot.Parent = Hotbar
-		EmptySlot:SetAttribute("SlotNumber", i)
-		
-		local FullSlot = script:WaitForChild("FullSlotTemplate"):Clone()
-		FullSlot.Name = "FullSlot" .. tostring(i)
-		FullSlot.LayoutOrder = i
-		FullSlot.Visible = false
-		FullSlot.Parent = Hotbar
-		
-		CollectionService:AddTag(EmptySlot, "FakeHotbarSlot")
-
-		local HotbarSlot = {
-			Number = i,
-			Frame = EmptySlot,
-			FullSlot = FullSlot,
-		} :: HotbarSlot
-
-		table.insert(HotbarSlots, HotbarSlot)
-
-		-- Equip by keycode
-		local KeyCode = Enum.KeyCode[KeyboardKeyCodes[i]]
-		ContextActionService:BindActionAtPriority("InventoryHotbar_".. KeyCode.Name, function(_, UserInputState, InputObject)
-			if UserInputState == Enum.UserInputState.Begin then
-				local ActiveSlot = HotbarSlot.ActiveSlot
-				local Type = ActiveSlot and ItemTypes[ActiveSlot.ItemType]
-				
-				if Type and not GameConfig.Categories[ActiveSlot.ItemType].NotEquippable then
-					Type:OnActivated(ActiveSlot)
-				end
-			end
-		end, false, 100, KeyCode)
-
-		-- React to server-sided hotbar changes (primarily for setting slot 1 to the starter sword if it's empty)
-		pData:WaitForChild("Hotbar")[i].Changed:Connect(function()
-			local ItemName = pData.Hotbar[i].Value
-			if ItemName ~= "" and not HotbarSlot.ActiveSlot then
-				local FoundSlot
-				for _, Slot in Slots do
-					if Slot.ItemInstance.Name == ItemName then
-						Slot:PushToHotbar(HotbarSlot)
-						break
-					end
-				end
-			end
-		end)
-	end
-
-	---- Slot dragging (to & from hotbar)
-	local IsInputDown = false
-	local CursorStick
-
-	UserInputService.InputBegan:Connect(function(InputObject, GameEvent)
-		if not InventoryOpen then
-			return
-		end
-
-		if table.find({Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch}, InputObject.UserInputType) then
-			IsInputDown = true
-			local Type, Slot = GetSlotOverCursor()
-
-			if Type == "Inventory" then
-				-- Yield until the user moves their cursor a few pixels, and make sure they're still dragging.
-				local Origin = UserInputService:GetMouseLocation()
-				while (Origin - UserInputService:GetMouseLocation()).Magnitude < 3 do
-					if not IsInputDown then
-						break
-					end
-					task.wait()
-				end
-
-				if IsInputDown then
-					StartSlot = Slot
-					
-					StartParent = Slot.Frame.Parent
-					
-					if StartParent.Parent == Hotbar then
-						StartParent.Visible = false
-					end
-					
-					Dragging = true
-
-					Slot.Active = false
-					
-					if Slot.EquippingTween then
-						Slot.EquippingTween:Cancel()
-					end
-					
-					local function UpdatePreRender()
-						local MouseLocation = UserInputService:GetMouseLocation()
-						if Slot.Frame then
-							Slot.Frame.Position = UDim2.fromOffset(MouseLocation.X - 32, MouseLocation.Y - 32)
-						end
-					end
-					
-					CursorStick = RunService.PreRender:Connect(UpdatePreRender)
-					UpdatePreRender()
-
-					-- Temporarily show hotbar slot
-					if Slot.HotbarNumber then
-						HotbarSlots[Slot.HotbarNumber].Frame.Visible = InventoryOpen
-					end
-
-					Slot.Frame.Parent = Gui
-				end
-			end
-		end
-	end)
-
-	UserInputService.InputEnded:Connect(function(InputObject, GameEvent)
-		if table.find({Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch}, InputObject.UserInputType) then
-			IsInputDown = false
-			if not Dragging then
-				return
-			end
-			task.delay(nil, function() -- Delay a Heartbeat frame due to race conditions with Slot.Frame.Activated for equipping
-				Dragging = false
-			end)
-
-			if CursorStick then
-				CursorStick:Disconnect()
-			end
-
-			local Type, Slot = GetSlotOverCursor()
-
-			if StartSlot then
-				StartSlot.Active = false
-				StartSlot.Frame.Parent = StartParent
-				
-				if Slot then
-					Slot.Frame.Position = UDim2.fromScale(0, 0)
-				end
-				
-				StartSlot.Frame.Position = UDim2.fromScale(0, 0)
-				if StartSlot.Equipped then
-					Tween:Play(StartSlot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, -4)})
-				end
-				
-				StartParent.Visible = true
-				
-				if StartSlot.HotbarNumber then
-					HotbarSlots[StartSlot.HotbarNumber].Frame.Visible = false
-				end
-
-				if isCursorOverInventory() and isSlotInHotbar(StartSlot) then
-					StartSlot:PushToInventory()
-				else
-					if Type == "Hotbar" then
-						StartSlot:PushToHotbar(Slot)
-					elseif Type == "Inventory" then
-						StartSlot:ExchangeWith(Slot)
-					end
-				end
-			end
-
-			StartSlot = nil
-			StartParent = nil
-		end
-	end)
-
-	---- ITEM CODE -----------------------------------------------------------------
-	-- Code here manages slot creation and removal for each item type
-
-	---- Tool
-	
-	local StartTimer = os.clock()
-	BackpackItemAdded.Event:Connect(function(BackpackItem: BackpackItem)
-		task.defer(function()
-			if not Slots[BackpackItem.Name] then
-				local Slot = Slot.new(BackpackItem)
-
-				-- Code here lets new tools (say ones bought from the shop) appear in the leftmost available hotbar slot
-				if (os.clock() - StartTimer) > 3 then -- Give time for replication to load in initial backpack instances
-					local HotbarSlot = GetNextHotbarSlot()
-					if HotbarSlot and not Slot.HotbarNumber then
-						Slot:PushToHotbar(HotbarSlot)
-					end
-				end
-			end
-		end)
-	end)
-
-	BackpackItemRemoved.Event:Connect(function(BackpackItem: BackpackItem)
-		if BackpackItem.Parent ~= Player.Character then
-			local Slot = Slots[BackpackItem.Name]
-			if not Slot then
-				return
-			end
-			
-			task.defer(function()
-				local Copies = 	CountTotalCopies({Name = BackpackItem.Name})
-				if Slot and Copies == 0 then
-					Slot:Destroy()
-				end
-			end)
-		end
-	end)
-
-	BackpackItemEquipped.Event:Connect(function(Item, OldItem)
-		local Slot = Slots[Item.Name]
-		if Slot then
-			UpdateSlotState(Slot, true)
-		end
-	end)
-	BackpackItemUnequipped.Event:Connect(function(Item)
-		local Slot = Slots[Item.Name]
-		if Slot then
-			UpdateSlotState(Slot, false)
-		end
-	end)
-
-	---- Items
-	
-	for _, Category in Items:GetChildren() do
-		for _, DataValue in Category:GetChildren() do
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			if Slots[Item.Instance.Name] then
-				continue
-			end
-			task.spawn(Slot.new, Item.Instance)
-		end
-
-		Category.ChildAdded:Connect(function(DataValue)
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			if Slots[Item.Instance.Name] then
-				return
-			end
-			
-			local newSlot = Slot.new(Item.Instance)
-			local CategoryConfig = GameConfig.Categories[Item.Type]
-			
-			local HotbarSlot = GetNextHotbarSlot()
-			if HotbarSlot and not DataValue:GetAttribute("DontSave") and not CategoryConfig.AmountOnly then
-				newSlot:PushToHotbar(HotbarSlot)
-			end
-		end)
-
-		Category.ChildRemoved:Connect(function(DataValue)
-			local Item = ContentLibrary[Category.Name][DataValue.Name]
-			local Slot = Slots[Item.Instance.Name]
-
-			task.defer(function()
-				local Copies = 	CountTotalCopies(Item)
-				if Slot and (Copies == 0) then
-					Slot:Destroy()
-				end
-			end)
-		end)
-	end
-	
-	---- Cosmetic & equipment
-
-	local lastActiveArmor = pData:WaitForChild("ActiveArmor").Value
-	local EquippedSlots = pData:WaitForChild("EquippedSlots")
-	local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
-	
-	local function UpdateKeybinds(Equipment, Verdict)
-		local Keybinds = Equipment 
-			and Equipment.Config 
-			and Equipment.Config.Keybinds
-		
-		if not Keybinds then
-			return
-		end
-
-		for Key, Data in Keybinds do
-			KeybindSystem:UpdateKeybind(Key, Data[1], Verdict, Data[2], Data[3], Data[4], {
-				Type = Equipment.Config.Type, Name = Equipment.Name
-			})
-		end
-	end
-	
-	local function CheckActiveArmor()
-		local Equipped = pData.ActiveArmor.Value ~= ""
-
-		local ArmorName = (Equipped and pData.ActiveArmor.Value) or lastActiveArmor
-		if ArmorName then
-			UpdateKeybinds(ContentLibrary.Armor[ArmorName], Equipped)
-		end
-		
-		-- Update now active armor, if not empty
-		if pData.ActiveArmor.Value ~= "" then
-			local Item = ContentLibrary.Armor[pData.ActiveArmor.Value]
-			local Slot = Item and Slots[Item.Instance.Name]
-			if Slot then
-				UpdateSlotState(Slot, true)	
-			end
-		end
-	end
-	
-	pData.ActiveArmor.Changed:Connect(function()
-		if lastActiveArmor ~= "" then
-			local Item = ContentLibrary.Armor[lastActiveArmor]
-			local Slot = Item and Slots[Item.Instance.Name]
-			if Slot then
-				UpdateSlotState(Slot, false)
-			end
-		end
-		
-		CheckActiveArmor()
-		lastActiveArmor = pData.ActiveArmor.Value
-	end)
-
-	task.spawn(CheckActiveArmor)
-	
-	for _, Slot in EquippedSlots:GetChildren() do
-		local LastEquipped = Slot.Value
-		if LastEquipped ~= "" then
-			task.defer(UpdateKeybinds, ContentLibrary.Accessory[LastEquipped], true)
-		end
-		
-		local function OnUpdatedValue()
-			local Equipped = Slot.Value ~= ""
-			
-			local _Slot = (Equipped and Slots[Slot.Value]) or (LastEquipped and Slots[LastEquipped])
-			if _Slot then
-				UpdateKeybinds(ContentLibrary.Accessory[_Slot.ItemInstance.Name], Equipped)
-				UpdateSlotState(_Slot, Equipped)
-			end
-			
-			LastEquipped = Slot.Value
-		end
-		
-		Slot.Changed:Connect(OnUpdatedValue)
-		OnUpdatedValue()
-	end
-	
-	for _, Slot in EquippedOrbs:GetChildren() do
-		local LastEquipped = Slot.Value
-		if LastEquipped ~= "" then
-			task.defer(UpdateKeybinds, ContentLibrary.Orb[LastEquipped], true)
-		end
-
-		local function OnUpdatedValue()
-			local Equipped = Slot.Value ~= ""
-
-			local _Slot = (Equipped and Slots[Slot.Value]) or (LastEquipped and Slots[LastEquipped])
-			if _Slot then
-				UpdateKeybinds(ContentLibrary.Orb[_Slot.ItemInstance.Name], Equipped)
-				UpdateSlotState(_Slot, Equipped)
-			end
-
-			LastEquipped = Slot.Value
-		end
-
-		Slot.Changed:Connect(OnUpdatedValue)
-		OnUpdatedValue()
-	end
-
-	---- OTHER ---------------------------------------------------------------------
-	
-	-- Update hide canvas visibility
-	local function CheckCanvasVisibility()
-		local TotalVisible = 0
-		for _, Child in HideCanvas:GetChildren() do
-			if Child:IsA("GuiObject") and Child.Visible then
-				TotalVisible += 1
-			end
-		end
-		
-		HideCanvas.Visible = (not InventoryOpen and TotalVisible > 0) or false
-	end
-	
-	HideCanvas.ChildRemoved:Connect(CheckCanvasVisibility)
-	HideCanvas.ChildAdded:Connect(CheckCanvasVisibility)
-	
-	CheckCanvasVisibility()
-	
-	-- Inventory frame toggle
-	local function ToggleInventory(Enabled: boolean?)
-		Enabled = if Enabled ~= nil then Enabled else not Inventory.Visible
-		InventoryOpen = Enabled
-
-		TooltipController:Clear()
-		Inventory.Visible = Enabled
-
-		-- Toggle hotbar slots
-		for n, HotbarSlot in HotbarSlots do
-			HotbarSlot.Frame.Visible = Enabled and not HotbarSlot.ActiveSlot
-		end
-
-		Hotbar.Size = UDim2.fromOffset(64, 0)
-		Tween:Play(Hotbar, {0.4, "Exponential"}, {Size = UDim2.fromOffset(64, 64)})
-
-		-- Update button visuals
-		if Enabled then
-			Tween:Play(Main.ToggleInventory, {0.5, "Exponential"}, {BackgroundColor3 = EquippedSlotColor})
-			Tween:Play(Main.ToggleInventory.Arrow, {0.5, "Exponential"}, {ImageColor3 = EquippedSlotTextColor, Rotation = 180})
-		else
-			Tween:Play(Main.ToggleInventory, {0.5, "Exponential"}, {BackgroundColor3 = EquippedSlotTextColor})
-			Tween:Play(Main.ToggleInventory.Arrow, {0.5, "Exponential"}, {ImageColor3 = EquippedSlotColor, Rotation = 0})
-		end
-
-		-- If hotbar dragging, break it
-		if StartSlot and not Enabled then
-			if CursorStick then
-				CursorStick:Disconnect()
-			end
-			
-			StartParent.Visible = true
-			StartSlot.Frame.Parent = StartParent
-			StartSlot.Frame.Position = UDim2.fromScale(0, 0)
-			if StartSlot.Equipped then
-				Tween:Play(StartSlot.Frame, {0.25, "Circular"}, {Position = UDim2.fromOffset(0, -4)})
-			end
-			
-			StartSlot = nil
-			StartParent = nil
-		end
-		
-		CheckCanvasVisibility()
-		UpdateHotbarVisibility()
-	end
-
-	Main:WaitForChild("ToggleInventory").Activated:Connect(function()
-		ToggleInventory()
-	end)
-	
-	local isOldInventory = GameConfig.UseToggleInventoryButton
-	if not isOldInventory and (UserInputService.TouchEnabled or GuiService:IsTenFootInterface() or GameConfig.ShowInventoryBackpackButtonOnPC) then
-		local BackpackTemplate = script.BackpackTemplate:Clone()
-		BackpackTemplate:WaitForChild("ItemIcon").ImageColor3 = EquippedSlotColor
-		
-		BackpackTemplate:WaitForChild("Keybind").TextColor3 = EquippedSlotColor
-		BackpackTemplate.Keybind.Visible = RunService:IsStudio() or (not UserInputService.TouchEnabled and not UserInputService.GamepadEnabled)
-		
-		BackpackTemplate.SlotButton.Activated:Connect(function()
-			ToggleInventory()
-		end)
-		
-		BackpackTemplate.Parent = Hotbar
-		BackpackTemplate.Visible = true
-	end
-	
-	Main.ToggleInventory.Visible = isOldInventory
-
-	local ExitButton = Inventory:WaitForChild("ExitButton")
-	ExitButton.BackgroundColor3 = GameConfig.SecondaryColor
-	ExitButton.TextColor3 = GameConfig.PrimaryColor
-
-	ExitButton.Activated:Connect(function()
-		ToggleInventory(false)
-	end)
-
-	ContextActionService:BindAction("InventoryGui", function(_, UserInputState)
-		if UserInputState == Enum.UserInputState.Begin then
-			ToggleInventory()
-		end
-	end, false, Enum.KeyCode.Backquote, Enum.KeyCode.E)
-
-	ToggleInventory(false)
-
-	-- Search functionality
-	local SearchBox = Inventory:WaitForChild("SearchBox")
-	SearchBox.PlaceholderColor3 = GameConfig.PrimaryColor
-	SearchBox.BackgroundColor3 = GameConfig.SecondaryColor
-
-	SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
-		local Text = SearchBox.Text
-
-		for _, Slot in Slots do
-			if isSlotInInventory(Slot) then
-				if #Text == 0 then
-					Slot.Frame.Visible = true
-				else
-					local matchesTerm = string.find(string.lower(Slot.ItemInstance.Name), string.lower(Text), 1, true) ~= nil
-					Slot.Frame.Visible = matchesTerm
-				end
-			end
-		end
-	end)
-
-	---- Cooldown UI (Inventory & item tooltip) ------------------------------------------------------------
-	
-	local CooldownTooltip = Player.PlayerGui:WaitForChild("Tooltip"):WaitForChild("Cooldown")
-	
-	local RecentlyActivatedTweens = {}
-	local ActivatedCooldowns = {}
-	local TweenGoal = 0
-	
-	local function CancelActivatedTweens()
-		for _, Tween in RecentlyActivatedTweens do
+	local function CancelPlayingHealthTweens()
+		for _, Tween in PlayingHealthTweens do
 			Tween:Cancel()
+			Tween = nil
 		end
-		RecentlyActivatedTweens = {}
+
+		PlayingHealthTweens = {}
 	end
-	
-	local function StopCooldown()
-		CancelActivatedTweens()
-		TweenGoal = os.clock()
-		CooldownTooltip.Visible = false
-	end
-	
-	local function StartCooldown(TotalTime, TimeLeft)
-		for _, Section in CooldownTooltip.Ring:GetChildren() do
-			Section.UIGradient.Rotation = 90
+
+	local function CancelPlayingStatTweens(StatName)
+		for _, Tween in (PlayingStatTweens[StatName] or {}) do
+			Tween:Cancel()
+			Tween = nil
 		end
-		
-		local Clock = os.clock()
-		TweenGoal = Clock
 
-		task.spawn(function()
-			for Index, SectionName in {"TopRight", "TopLeft", "BottomLeft", "BottomRight"} do
-				local Section = CooldownTooltip.Ring[SectionName]
+		PlayingStatTweens[StatName] = {}
+	end
 
-				local NewTween = Tween:Play(Section.UIGradient, {TimeLeft / 4, "Linear"}, {Rotation = -1})
-				table.insert(RecentlyActivatedTweens, NewTween)
-				
-				NewTween.Completed:Wait()
-				
-				if TweenGoal ~= Clock then
-					break
+	---- UI meter display
+
+	local function UpdateDamageMeter(Humanoid)
+		local DamageTaken = math.round(PreviousHealth - Humanoid.Health)
+		SustainedDamageTaken += DamageTaken
+
+		task.defer(function()
+			if Humanoid.Health == Humanoid.MaxHealth then
+				return
+			end
+
+			-- Start meter & play
+			local Clock = os.clock()
+			DamageClock = Clock
+
+			CancelPlayingHealthTweens()
+
+			TakenLabel.Text = `-{FormatNumber(SustainedDamageTaken, "Suffix")}`
+			TakenLabel.Padding.PaddingBottom = UDim.new(0, 10)
+			TakenLabel.TextStrokeTransparency = 0.7
+			TakenLabel.TextTransparency = 0
+			TakenLabel.Visible = true
+
+			Tween:Play(TakenLabel:WaitForChild("Padding"), {0.3, "Circular"}, {PaddingBottom = UDim.new(0, 0)})
+
+			task.wait(2)
+
+			-- Remove meter if there isn't any new interactions
+			if DamageClock == Clock then
+				SustainedDamageTaken = 0
+
+				local PaddingTween = Tween:Play(TakenLabel:WaitForChild("Padding"), {0.3, "Circular"}, {PaddingBottom = UDim.new(0, 10)})
+				local TakenLabelTween = Tween:Play(TakenLabel, {0.3, "Circular"}, {TextTransparency = 1})
+				table.insert(PlayingHealthTweens, PaddingTween)
+				table.insert(PlayingHealthTweens, TakenLabelTween)
+
+				TakenLabel.TextStrokeTransparency = 1
+
+				local NewClock = os.clock()
+				DamageClock = NewClock
+
+				task.wait(0.3)
+
+				if NewClock ~= DamageClock then 
+					return 
 				end
+
+				TakenLabel.Visible = false
 			end
 		end)
-		
-		task.delay(TimeLeft, function()
-			if TweenGoal == Clock then
-				StopCooldown()
-			end
-		end)
-		
-		CooldownTooltip.Visible = true
 	end
-	
-	local function CheckPlayerTool(Name, Tool)
-		local Character = Player.Character
-		local Tool = Tool or (Character and Character:FindFirstChildWhichIsA("Tool"))
-		
-		local isValidTool = Tool and Tool.Name == Name
-		if isValidTool then
-			local TimeLeft = math.max(0, ActivatedCooldowns[Tool.Name][1] - (os.clock() - ActivatedCooldowns[Tool.Name][2]))
-			StartCooldown(ActivatedCooldowns[Tool.Name][1], TimeLeft)
-		end
-	end
-	
-	EventModule:GetOnEvent("PlayerUsedWeapon"):Connect(function(ItemCooldown, Name)
-		if ItemCooldown < 0.15 then
+
+	local function UpdateStatisticMeter(StatName, Change)
+		if not GameConfig.EnabledFeatures.StatChange then
 			return
 		end
+
+		SustainedStatChange[StatName] = math.round((SustainedStatChange[StatName] and SustainedStatChange[StatName] + Change) or Change)
+		PlayingStatTweens[StatName] = PlayingStatTweens[StatName] or {}
+
+		CancelPlayingStatTweens(StatName)
+
+		local GainedFrame = Gained:WaitForChild(StatName)
+		GainedFrame.Padding.PaddingBottom = UDim.new(0, 10)
+		GainedFrame.GroupTransparency = 0
 		
-		local function Play(Frame)
-			local Cooldown = Frame.Cooldown
-			Cooldown.BackgroundColor3 = GameConfig.BackgroundColor
-
-			local Gradient = Cooldown.UIGradient
-			Gradient.Offset = (ItemCooldown < 1 and Vector2.new(0, -1.3)) or Vector2.new(0, -1)
-
-			Tween:Play(Cooldown, {0.1, "Quad", "InOut"}, {BackgroundTransparency = 0.3})
-			Tween:Play(Gradient, {ItemCooldown, "Linear", "InOut"}, {Offset = Vector2.new(0, 0)})
-
-			task.delay(ItemCooldown - 0.1, function()
-				Tween:Play(Cooldown, {0.1, "Linear", "InOut"}, {BackgroundTransparency = 1})
-			end)
+		if StatName == "Gold" then
+			GainedFrame.StatCount.Text = `+{FormatNumber(SustainedStatChange[StatName], "Suffix")}` .. " G"
+		else
+			GainedFrame.StatCount.Text = `+{FormatNumber(SustainedStatChange[StatName], "Suffix")}` .. " XP"
 		end
 		
-		if GameConfig.ShowMouseCooldownUI then
-			ActivatedCooldowns[Name] = {ItemCooldown, os.clock()}
-			CheckPlayerTool(Name)
-		end
+		GainedFrame.Visible = true
 
-		local Slot = Slots[Name]
-		if Slot then
-			Play(Slot.Frame)
-		end
-	end)
-	
-	if GameConfig.ShowMouseCooldownUI then
-		ContextActionService.LocalToolEquipped:Connect(function(Tool)
-			if not ActivatedCooldowns[Tool.Name] then 
+		Tween:Play(GainedFrame:WaitForChild("Padding"), {0.3, "Circular"}, {PaddingBottom = UDim.new(0, 0)})
+
+		local Clock = os.clock()
+		UpdatedStats[StatName] = Clock
+
+		task.wait(2)
+
+		-- Remove meter if there isn't any new interactions
+		if UpdatedStats[StatName] == Clock then
+			SustainedStatChange[StatName] = nil
+
+			local PaddingTween = Tween:Play(GainedFrame:WaitForChild("Padding"), {0.3, "Circular"}, {PaddingBottom = UDim.new(0, 10)})
+			local TakenLabelTween = Tween:Play(GainedFrame, {0.3, "Circular"}, {GroupTransparency = 1})
+			table.insert(PlayingStatTweens[StatName], PaddingTween)
+			table.insert(PlayingStatTweens[StatName], TakenLabelTween)
+
+			local NewClock = os.clock()
+			UpdatedStats[StatName] = NewClock
+
+			task.wait(0.3)
+
+			if UpdatedStats[StatName] ~= NewClock then
 				return 
 			end
 
-			if os.clock() - ActivatedCooldowns[Tool.Name][2] < ActivatedCooldowns[Tool.Name][1] then
-				CheckPlayerTool(Tool.Name, Tool)
-			end
-		end)
-
-		ContextActionService.LocalToolUnequipped:Connect(function(Tool)
-			StopCooldown()
-		end)
+			GainedFrame.Visible = false
+		end
 	end
 
-	---- BACKPACK LOGIC ------------------------------------------------------------
+	---- Regular callbacks
 
-	local function UpdateItemCount()
-		if Main.Parent == nil then
-			return
+	local function UpdateStatsFrame(Reset)
+		-- Dynamically fetch the current stat objects to ensure we are using valid references
+		local XPObj = Stats:FindFirstChild("XP")
+		local GoldObj = Stats:FindFirstChild("Gold")
+		local LevelObj = Stats:FindFirstChild("Level")
+		local KillsObj = Stats:FindFirstChild("Kills")
+
+		if not XPObj or not GoldObj or not LevelObj or not KillsObj then return end
+
+		local CurrentXP = XPObj.Value
+		local CurrentGold = GoldObj.Value
+		local CurrentLevel = LevelObj.Value
+		local CurrentKills = KillsObj.Value
+
+		local XPChange = math.max(0, CurrentXP - Previous.XP)
+		local GoldChange = math.max(0, CurrentGold - Previous.Gold)
+
+		-- Update Previous values IMMEDIATELY after calculating the change.
+		-- This prevents double-counting if subsequent code (like getPlayerLuck) errors or lags.
+		Previous.XP = CurrentXP
+		Previous.Gold = CurrentGold
+
+		-- Experience
+		local XPRequirement = math.ceil((GameConfig.XPModifier == "Multiply" and (CurrentLevel * GameConfig.XPPerLevel) * 0.5)
+			or (GameConfig.XPModifier == "Exponential" and GameConfig.XPPerLevel ^ CurrentLevel))
+
+		local LevelUpPercent = math.clamp(CurrentXP / XPRequirement, 0, 1)
+		if (CurrentLevel == GameConfig.MaxLevel) then LevelUpPercent = 1 end
+
+		if Reset == true then
+			-- Reset fill size to 0 on level up
+			XPFrameFill.Size = UDim2.fromScale(0, 1)
 		end
 
-		local Count = 0
-		for _, Value in pData.Items:GetDescendants() do
-			if Value:IsA("Folder") then
-				continue
-			end
+		XPFrame:WaitForChild("Percent").Text = math.round(LevelUpPercent * 100) .. "%"
+		XPFrame:WaitForChild("StatCount").Text = FormatNumber(CurrentXP, "Suffix") 
+			.. " <font transparency ='0.25' size ='17'>/ " 
+			.. FormatNumber(XPRequirement, "Suffix") 
+			.. "</font>"
 
-			if Value.ClassName == "NumberValue" then
-				Count += Value.Value
-			else
-				Count += 1
-			end
+		-- Sync XP Fill Size and Ticks Gradient
+		Tween:Play(XPFrameFill, {0.5, "Circular"}, {Size = UDim2.fromScale(LevelUpPercent, 1)})
+		Tween:Play(XPFrameTicks:WaitForChild("UIGradient"), {0.5, "Circular"}, {Offset = Vector2.new(LevelUpPercent, 0)})
+
+		-- Other stats
+		if GoldChange > 0 then
+			task.spawn(UpdateStatisticMeter, "Gold", GoldChange)
+		end
+		if XPChange > 0 then
+			task.spawn(UpdateStatisticMeter, "XP", XPChange)
 		end
 
-		Main.Inventory.ItemLabel.Text = `({FormatNumber(Count, "Commas")} items)`
+		LevelValue.Text = "Lv. " .. FormatNumber(CurrentLevel, "Suffix")
+
+		GoldFrame:WaitForChild("StatCount").Text = "Gold: " .. FormatNumber(CurrentGold, "Suffix")
+		KillsFrame:WaitForChild("StatCount").Text = "Kills: " .. FormatNumber(CurrentKills, "Suffix")
+
+		-- Calculate and update Luck
+		-- (Wrapped in pcall safely or just ensuring Previous is already updated above protects this)
+		local ownedProducts = ProductLib:GetProducts(Player)
+		local currentLuck = getPlayerLuck(Player, ownedProducts)
+		LuckFrame:WaitForChild("StatCount").Text = "Luck: " ..  string.format("x%.2f", currentLuck)
 	end
+	
+	-- Force the Stats Menu to instantly refresh whenever armor is equipped/unequipped
+	local ActiveArmor = pData:WaitForChild("ActiveArmor")
+	ActiveArmor.Helmet.Changed:Connect(UpdateStatsFrame) 
+	ActiveArmor.Pauldron.Changed:Connect(UpdateStatsFrame)
+	ActiveArmor.Chestplate.Changed:Connect(UpdateStatsFrame)
 
-	local function OnBackpackAdded(Backpack: Backpack)
-		for _, Slot in Slots do
-			if not GameConfig.Categories[Slot.ItemType].IsATool then
-				continue
-			end
-			Slot:Destroy()
-		end
+	-- Updated Connections to ensure correct argument passing
+	Stats.ChildAdded:Connect(function(Stat)
+		Stat.Changed:Connect(function()
+			UpdateStatsFrame(Stat.Name == "Level")
+		end)
+	end)
 
-		local Character = Player.Character or Player.CharacterAdded:Wait()
-		local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
-
-		EquippedTool = nil
-		StartTimer = os.clock()
-
-		local function ItemAdded(Item: Instance)
-			UpdateItemCount()
-			if Item:IsA("BackpackItem") then
-				if EquippedTool == Item then
-					BackpackItemUnequipped:Fire(Item)
-					EquippedTool = nil
-				end
-				BackpackItemAdded:Fire(Item)
-			end
-		end
-		local function ItemRemoved(Item: Instance)
-			if Humanoid.Health <= 0 then
-				return
-			end
-			UpdateItemCount()
-			if Item:IsA("BackpackItem") then
-				if EquippedTool ~= Item then
-					BackpackItemEquipped:Fire(Item)
-					EquippedTool = Item
-				end
-				BackpackItemRemoved:Fire(Item)
-			end
-		end
-
-		-- Resume after
-		task.defer(function()
-			Backpack = Player:WaitForChild("Backpack")
-
-			local Added = Backpack.ChildAdded:Connect(ItemAdded)
-			local Removing = Backpack.ChildRemoved:Connect(ItemRemoved)
-			for _, Item in Backpack:GetChildren() do
-				task.spawn(ItemAdded, Item)
-			end
-
-			Backpack.Destroying:Once(function()
-				Added:Disconnect()
-				Removing:Disconnect()
-				for _, Item in Backpack:GetChildren() do
-					ItemRemoved(Item)
-				end
-			end)
+	for _, Stat in Stats:GetChildren() do
+		Stat.Changed:Connect(function()
+			UpdateStatsFrame(Stat.Name == "Level")
 		end)
 	end
 
-	Player.ChildAdded:Connect(function(Child)
-		if Child:IsA("Backpack") then
-			OnBackpackAdded(Child)
+	UpdateStatsFrame()
+
+	local function UpdateCharacterFrame(ChangedAttribute)
+		local Character = Player.Character
+		local Humanoid = Character and Character:FindFirstChild("Humanoid")
+		if not Humanoid then return end
+
+		-- Health & Damage counter
+		local isHealthChanged = ChangedAttribute == true or ChangedAttribute == "Health" or ChangedAttribute == "MaxHealth"
+
+		if isHealthChanged then
+			local Alpha = math.clamp(Humanoid.Health / Humanoid.MaxHealth, 0, 1)
+			local GoalColor = (Alpha > 0.66 and GameConfig.PercentageColors.High)
+				or (Alpha > 0.33 and GameConfig.PercentageColors.Medium) 
+				or GameConfig.PercentageColors.Low
+
+			-- 1. Update Text & Colors
+			HPFrame:WaitForChild("StatCount").Text = FormatNumber(math.floor(Humanoid.Health), "Suffix")
+			HPFrame:WaitForChild("Percent").Text = math.round(Alpha * 100) .. "%"
+			if TakenLabel then TakenLabel.TextColor3 = GoalColor end
+
+			-- 2. Update Fill Size & Ticks Gradient
+			Tween:Play(HPFrameFill, {0.5, "Circular"}, {Size = UDim2.fromScale(Alpha, 1)})
+			Tween:Play(HPFrameTicks:WaitForChild("UIGradient"), {0.5, "Circular"}, {Offset = Vector2.new(Alpha, 0)})
+
+			Tween:Play(HPFrameFill, {0.5, "Circular"}, {BackgroundColor3 = GoalColor})
+			Tween:Play(HPFrame:WaitForChild("StatName"), {0.5, "Circular"}, {TextColor3 = GoalColor:Lerp(Color3.fromRGB(255, 255, 255), 0.05)})
+
+			if PreviousHealth > Humanoid.Health and GameConfig.ShowPlayerDamageDisplay then
+				task.spawn(UpdateDamageMeter, Humanoid)
+			end
+		end
+
+		PreviousHealth = Humanoid.Health
+		WalkSpeedFrame:WaitForChild("StatCount").Text = "WS: " .. FormatNumber(Humanoid.WalkSpeed, "Suffix")
+		JumpPowerFrame:WaitForChild("StatCount").Text = "JP: " .. FormatNumber(Humanoid.JumpPower, "Suffix")
+	end
+
+	local function UpdateManaBar()
+		local Character = Player.Character
+		local Humanoid = Character and Character:FindFirstChild("Humanoid")
+		local ManaAttributes = Humanoid and Humanoid:FindFirstChild("Mana")
+		if not ManaAttributes then return end
+
+		local Mana = ManaAttributes.Mana:GetAttribute("Default")
+		local MaxMana = 0
+		for _, Value in ManaAttributes.MaxMana:GetAttributes() do
+			if Value == Value then MaxMana += Value end
+		end
+
+		local Alpha = math.clamp(Mana / MaxMana, 0, 1)
+
+		MPFrame:WaitForChild("StatCount").Text = FormatNumber(math.floor(Mana), "Suffix")
+		MPFrame:WaitForChild("Percent").Text = math.round(Alpha * 100) .. "%"
+
+		-- Sync Fill Size and Ticks Gradient
+		Tween:Play(MPFrameFill, {0.5, "Circular"}, {Size = UDim2.fromScale(Alpha, 1)})
+		Tween:Play(MPFrameTicks:WaitForChild("UIGradient"), {0.5, "Circular"}, {Offset = Vector2.new(Alpha, 0)})
+	end
+
+	---- Update frames & initialize
+	
+	-- Listen for purchases to update Luck Stat immediately
+	-- Gamepasses
+	MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamepassId, wasPurchased)
+		if player == Player and wasPurchased then
+			task.wait(0.5) -- Wait for server replication
+			UpdateStatsFrame()
 		end
 	end)
 
-	local Backpack = Player:FindFirstChildOfClass("Backpack")
-	if Backpack then
-		OnBackpackAdded(Backpack)
+	-- Bundles/Deals
+	MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+		if userId == Player.UserId and wasPurchased then
+			task.wait(0.5) -- Wait for server replication
+			UpdateStatsFrame()
+		end
+	end)
+	
+	if GameConfig.ManaPerLevel <= 0 then
+		MainFrame:WaitForChild("MP").Visible = false
 	end
-
-	-- Character-related clean-up
+	
+	---- Update character frame
+	
 	local function OnCharacterAdded(Character: Model)
 		local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
+		
+		local Properties = {"Health", "MaxHealth", "WalkSpeed", "JumpPower"}
+		for _, Name in Properties do
+			Humanoid:GetPropertyChangedSignal(Name):Connect(function()
+				UpdateCharacterFrame(Name)
+			end)
+		end
+		
+		SustainedDamageTaken = 0
+		PreviousHealth = Humanoid.MaxHealth
+		DamageClock = os.clock()
+		
+		for Name in Previous do
+			Gained:WaitForChild(Name).Visible = false
+			CancelPlayingStatTweens(Name)
+		end
+		
+		TakenLabel.Visible = false
+		CancelPlayingHealthTweens()
 
-		local c1; c1 = Humanoid.Died:Once(function()
-			Humanoid:UnequipTools()
-		end)
+		local ManaAttributes = Humanoid:WaitForChild("Mana")
+		ManaAttributes:WaitForChild("Mana").AttributeChanged:Connect(UpdateManaBar)
+		ManaAttributes:WaitForChild("MaxMana").AttributeChanged:Connect(UpdateManaBar)
 
-		local c2; c2 = Character.ChildRemoved:Connect(function(Child)
-			if not Child.Parent then -- Item has likely been sold / removed
-				local Slot = Slots[Child.Name]
-				local Count = CountTotalCopies({Name = Child.Name})
-
-				if Slot and (Count <= 0) then
-					Slot:Destroy()
-				elseif Slot and (Count > 0) then
-					UpdateSlotState(Slot, false)
-				end
-			else
-				local Slot = Slots[Child.Name]
-				UpdateSlotState(Slot, false)
-			end
-		end)
-
-		Player.CharacterRemoving:Once(function()
-			c1:Disconnect()
-			c2:Disconnect()
-		end)
+		UpdateManaBar()
+		UpdateCharacterFrame(true)
 	end
-
+	
 	Player.CharacterAdded:Connect(OnCharacterAdded)
 	if Player.Character then
 		OnCharacterAdded(Player.Character)
 	end
 
-	---- INIT ----------------------------------------------------------------------
-	-- Hacky, but someone experienced issues with backpack not being properly set
+	-- Color change
+	for _, Frame in CollectionService:GetTagged("Background") do
+		Frame.BackgroundColor3 = GameConfig.BackgroundColor
+	end
 	
-	while true do
-		pcall(function()
-			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+	---- Update stats frame
+
+	Stats.ChildAdded:Connect(function(Stat)
+		Stat.Changed:Connect(UpdateStatsFrame)
+	end)
+
+	for _, Stat in Stats:GetChildren() do
+		Stat.Changed:Connect(function()
+			UpdateStatsFrame(Stat.Name == "Level")
+		end)
+	end
+
+	UpdateStatsFrame()
+
+	---- Bottom right information ----------------------------------------------------------------
+	
+	local previousPotionsVisible = false
+	local previousStatisticsVisible = false
+	
+	local Statuses = Player:WaitForChild("Statuses")
+	
+	local StatisticsFrame = BottomRight:WaitForChild("Statistics")
+	local PotionFrame = BottomRight:WaitForChild("Potions")
+	local LabelTemplate = PotionFrame:WaitForChild("Label")
+	local PotionsLabel = BottomRight:WaitForChild("PotionsLabel")
+	
+	PotionFrame.Visible = false
+	PotionsLabel.Visible = false
+	LabelTemplate.Visible = false
+	StatisticsFrame.Visible = false
+	
+	-- Inverse scale notifications
+	local Bottom = BottomRight:WaitForChild("Bottom")
+	local Buttons = Bottom:WaitForChild("Buttons")
+	local UIListLayout = Bottom:WaitForChild("UIListLayout")
+
+	local function UpdateNotificationScale()
+		local BiggestSize = StatisticsFrame.AbsoluteSize.X
+		if PotionFrame.AbsoluteSize.X > BiggestSize then
+			BiggestSize = PotionFrame.AbsoluteSize.X
+		end
+
+		local Goal = {Padding = UDim.new(0, math.max(((BiggestSize - Buttons.AbsoluteSize.X) / Gui.UIScale.Scale) + 6, 6))}
+		Tween:Play(UIListLayout, {0.15}, Goal)
+	end
+
+	Bottom.ChildAdded:Connect(UpdateNotificationScale)
+	Bottom.ChildRemoved:Connect(UpdateNotificationScale)
+	
+	---- Info UI
+	
+	local function FormatNumberToTime(Number)
+		local TotalHours = math.floor(Number / 3600)
+		local TotalMinutes = math.floor((Number - (TotalHours * 3600)) / 60)
+		local TotalSeconds = Number - (TotalHours * 3600) - (TotalMinutes * 60)
+		if TotalHours > 0 then
+			return `{TotalHours}h {TotalMinutes}m {TotalSeconds}s`
+		elseif TotalMinutes > 0 then
+			return `{TotalMinutes}m {TotalSeconds}s`
+		else
+			return `{TotalSeconds}s`
+		end
+	end
+
+	local function UpdateAllStatistics()
+		local Character = Player.Character
+		
+		local Tool = Character and Character:FindFirstChildWhichIsA("Tool")
+		
+		local Humanoid = Character and Character:FindFirstChild("Humanoid")
+		if not Humanoid then 
+			return 
+		end
+
+		-- Update statistics frames
+		for _, Callback in StatisticModules do
+			Callback(Character, Tool)
+		end
+
+		-- Update the label visibility
+		local TotalVisible = 0
+		for _, Label in StatisticsFrame:GetChildren() do
+			if Label:IsA("TextLabel") and Label.Visible then
+				TotalVisible += 1
+			end
+		end
+
+		local CanShow = TotalVisible ~= 0
+
+		if not previousStatisticsVisible and CanShow then
+			Tween:Play(StatisticsFrame.UIScale, {0.35, "Circular"}, {
+				Scale = 1,
+			})
+
+			StatisticsFrame.UIScale.Scale = 0.7
+		end
+
+		StatisticsFrame.Visible = CanShow
+		previousStatisticsVisible = CanShow
+
+		UpdateNotificationScale()
+	end
+	
+	local function UpdatePotionsUI()
+		local CanShow = false
+		
+		for _, Potion in Statuses:GetChildren() do
+			local NewLabel = PotionFrame:FindFirstChild(Potion.Name) or LabelTemplate:Clone()
+			NewLabel.Parent = PotionFrame
+			NewLabel.Name = Potion.Name
+
+			local Duration = Potion:GetAttribute("Duration")
+			local IsActive = Duration > 0
+			NewLabel.Visible = IsActive
+
+			local TextSuffix = ((Potion:GetAttribute("Addition") == nil or Potion:GetAttribute("Addition") == 0) and `x{Potion:GetAttribute("Boost")}`)
+				or `+{FormatNumber(Potion:GetAttribute("Addition"), "Suffix")}`
+
+			NewLabel.Text = `<b>{FormatNumberToTime(Duration)}</b> {Potion.Name} <font size='14' transparency ='0.2'>({TextSuffix})</font>`
+
+			if Duration < 10 then
+				Tween:Play(NewLabel, {0.25, "Quad", "InOut"}, {TextColor3 = Color3.fromRGB(255, 78, 78)})
+				task.delay(0.35, function()
+					Tween:Play(NewLabel, {0.25, "Quad", "InOut"}, {TextColor3 = Color3.fromRGB(223, 223, 223)})
+				end)
+			end
+
+			if IsActive then
+				CanShow = true
+			end
+		end
+		
+		if not previousPotionsVisible and CanShow then
+			Tween:Play(PotionFrame.UIScale, {0.35, "Circular"}, {
+				Scale = 1,
+			})
+
+			PotionFrame.UIScale.Scale = 0.7
+		end
+		
+		if CanShow ~= previousPotionsVisible then
+			task.defer(UpdateAllStatistics)
+		end
+
+		PotionFrame.Visible = CanShow
+		previousPotionsVisible = CanShow
+		
+		UpdateNotificationScale()
+	end
+
+	local function CharacterAddedSuite(Character: Model)
+		local Humanoid = Character:WaitForChild("Humanoid")
+
+		-- Update statistics
+		local Statistics = Humanoid:WaitForChild("Statistics")
+		for _, Statistic in Statistics:GetChildren() do
+			Statistic.AttributeChanged:Connect(UpdateAllStatistics)
+		end
+
+		-- Update tools/armor
+		Character.ChildAdded:Connect(function(Child)
+			if Child:IsA("Tool") or Child.Name == "ArmorGroup" then
+				task.defer(UpdateAllStatistics)
+			end
 		end)
 		
-		task.wait(GameConfig.DefaultClientRefresh)
+		Character.ChildRemoved:Connect(function(Child)
+			if Child:IsA("Tool") or Child.Name == "ArmorGroup" then
+				task.defer(UpdateAllStatistics)
+			end
+		end)
+
+		UpdateAllStatistics()
+	end
+	
+	if GameConfig.EnabledFeatures.InfoUI then
+		for _, Potion in Statuses:GetChildren() do
+			Potion.AttributeChanged:Connect(UpdatePotionsUI)
+		end
+
+		UpdatePotionsUI()
+
+		-- Statistics frame
+		StatisticsLabel.Visible = false
+
+		-- Update attributes
+		local Attributes = pData:WaitForChild("Attributes")
+		for _, Attribute in Attributes:GetChildren() do
+			Attribute.Changed:Connect(UpdateAllStatistics)
+		end
+
+		if Player.Character then
+			CharacterAddedSuite(Player.Character)
+		end
+		Player.CharacterAdded:Connect(CharacterAddedSuite)
+
+		-- Update based on equipped accessories
+		for _, Slot in pData:WaitForChild("EquippedSlots"):GetChildren() do
+			Slot.Changed:Connect(function()
+				task.defer(UpdateAllStatistics)
+			end)
+		end
+
+		-- Update based on Active Armor (Fixes Defense not updating)
+		for _, Slot in pData:WaitForChild("ActiveArmor"):GetChildren() do
+			Slot.Changed:Connect(function()
+				task.defer(UpdateAllStatistics)
+			end)
+		end
+
+		-- Update based on Equipped Orbs (Fixes Defense/Stats from orbs)
+		for _, Slot in pData:WaitForChild("EquippedOrbs"):GetChildren() do
+			Slot.Changed:Connect(function()
+				task.defer(UpdateAllStatistics)
+			end)
+		end
+	end
+	
+	---- Frame opens ----------------------------------------------------------------
+	
+	local Functions = {}
+
+	local function CloseOtherGUIs(NewName)
+		for Name, Callback in Functions do
+			if string.find(Name, "Close") and not string.find(Name, NewName) then
+				task.spawn(Callback)
+			end
+		end
+	end
+	
+	---- Quest frame open
+	
+	do
+		local QuestsOpen = false
+
+		local QuestsButton = BottomRight:WaitForChild("Bottom"):WaitForChild("Buttons"):WaitForChild("Quests")
+		
+		local Gui = Player.PlayerGui:WaitForChild("Quest")
+		local QuestsMainFrame = Gui:WaitForChild("MainFrame")
+		local Padding = Gui:WaitForChild("Padding")
+		
+		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(GameConfig.FrameColors.Quests)
+
+		local function OpenQuests()
+			CloseOtherGUIs("Quests")
+			
+			SetCanvasGroupVisibility(QuestsMainFrame, true)
+			
+			Gui.Enabled = true
+			Padding.PaddingTop = UDim.new(0, 50)
+			
+			Tween:Play(Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
+		end
+
+		local function CloseQuests()
+			SetCanvasGroupVisibility(QuestsMainFrame, false)
+			
+			Tween:Play(Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 50)})
+		end
+
+		local function ToggleQuestsFrame(Enabled: boolean?)
+			QuestsOpen = if Enabled == nil then not QuestsOpen else Enabled
+			if QuestsOpen then
+				OpenQuests()
+			else
+				CloseQuests()
+			end
+
+			Tween:Play(QuestsButton, {0.2, "Exponential"}, {BackgroundColor3 = QuestsOpen and Primary or Secondary})
+			Tween:Play(QuestsButton:WaitForChild("ImageLabel"), {0.2, "Exponential"}, {ImageColor3 = QuestsOpen and Secondary or Primary})
+		end
+		
+		function Functions.CloseQuests()
+			ToggleQuestsFrame(false)
+		end
+
+		QuestsButton.Activated:Connect(function()
+			ToggleQuestsFrame()
+		end)
+		
+		QuestsMainFrame:WaitForChild("ExitButton").Activated:Connect(function()
+			ToggleQuestsFrame(false)
+		end)
+		ToggleQuestsFrame(false)
+
+		local IsQuestsEnabled = GameConfig.EnabledFeatures.Quests
+		if not IsQuestsEnabled then
+			QuestsButton.Visible = false
+		end
+	end
+
+	---- Attributes frame open
+	
+	do
+		local AttributesOpen = false
+
+		local PointsValue = pData:WaitForChild("Points")
+		local AttributesButton = BottomRight:WaitForChild("Bottom"):WaitForChild("Buttons"):WaitForChild("Attributes")
+		
+		local Gui = Player.PlayerGui:WaitForChild("Attributes")
+		local AttributesMainFrame = Gui:WaitForChild("MainFrame")
+		local AttributesPopupFrame = Gui:WaitForChild("PopupFrame")
+		local Padding = Gui:WaitForChild("Padding")
+		
+		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(GameConfig.FrameColors.Attributes)
+		
+		local function PointsValueChanged()
+			if PointsValue.Value > 0 then
+				if PointsValue.Value >= 1000 then
+					AttributesButton.Frame.TextLabel.Rotation = 10
+					AttributesButton.Frame.TextLabel.TextXAlignment = Enum.TextXAlignment.Center
+				else
+					AttributesButton.Frame.TextLabel.Rotation = 0
+					AttributesButton.Frame.TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+				end
+				AttributesButton.Frame.Visible = true
+				AttributesButton.Frame.TextLabel.Text = FormatNumber(PointsValue.Value, "Suffix")
+			else
+				AttributesButton.Frame.Visible = false
+			end
+		end
+
+		PointsValueChanged()
+		PointsValue.Changed:Connect(PointsValueChanged)
+
+		local function OpenAttributes()
+			CloseOtherGUIs("Attributes")
+			
+			SetCanvasGroupVisibility(AttributesPopupFrame, false)
+			SetCanvasGroupVisibility(AttributesMainFrame, true)
+			
+			Gui.Enabled = true
+			
+			Padding.PaddingTop = UDim.new(0, 50)
+			Tween:Play(Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
+		end
+
+		local function CloseAttributes()
+			SetCanvasGroupVisibility(AttributesPopupFrame, false)
+			SetCanvasGroupVisibility(AttributesMainFrame, false)
+			
+			Tween:Play(Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 50)})
+		end
+
+		local function ToggleAttributesFrame(Enabled: boolean?)
+			AttributesOpen = if Enabled == nil then not AttributesOpen else Enabled
+			if AttributesOpen then
+				OpenAttributes()
+			else
+				CloseAttributes()
+			end
+
+			Tween:Play(AttributesButton, {0.2, "Exponential"}, {BackgroundColor3 = AttributesOpen and Primary or Secondary})
+			Tween:Play(AttributesButton:WaitForChild("ImageLabel"), {0.2, "Exponential"}, {ImageColor3 = AttributesOpen and Secondary or Primary})
+		end
+		
+		function Functions.CloseAttributes()
+			ToggleAttributesFrame(false)
+		end
+
+		AttributesButton.Activated:Connect(function()
+			ToggleAttributesFrame()
+		end)
+		AttributesMainFrame:WaitForChild("ExitButton").Activated:Connect(function()
+			ToggleAttributesFrame(false)
+		end)
+		ToggleAttributesFrame(false)
+
+		local IsAttributesEnabled = GameConfig.EnabledFeatures.Attributes
+		if not IsAttributesEnabled then
+			AttributesButton.Visible = false
+		end
+	end
+	
+	---- Label visibility
+	
+	local TotalVisible = 0 
+	for _, Frame in BottomRight:WaitForChild("Bottom"):WaitForChild("Buttons"):GetChildren() do
+		if not Frame:IsA("UIListLayout") and Frame.Visible then
+			TotalVisible += 1
+		end
+	end
+	
+	if TotalVisible <= 0 then
+		BottomRight.Label.Visible = false
+	end
+	
+	---- Level progress ----------------------------------------------------------------
+	
+	if GameConfig.EnabledFeatures.AreaProgress then
+		local Statistics = pData:WaitForChild("Stats")
+		local Level = Statistics:WaitForChild("Level")
+		
+		local TooltipScreenGui = Player.PlayerGui:WaitForChild("Tooltip")
+		local ProgressCanvas = TooltipScreenGui:WaitForChild("Progress")
+		local ProgressFrame = ProgressCanvas:WaitForChild("Frame")
+		
+		local LevelText = BottomCenter:WaitForChild("Main"):WaitForChild("Level"):WaitForChild("LevelValue") :: TextLabel
+		
+		---- Function callbacks
+		
+		local AreaCache = {}
+		
+		local function CycleThroughAllAreas(Callback, Added)
+			for _, Name in {"Portal", "Level Door"} do
+				local Tagged = CollectionService:GetTagged(Name)
+				for _, Object in Tagged do
+					Callback(Object)
+				end
+				
+				if Added then
+					CollectionService:GetInstanceAddedSignal(Name):Connect(Callback)
+				end
+			end
+		end
+		
+		CycleThroughAllAreas(function(Object)
+			local Config = Object:FindFirstChild("Config") and require(Object.Config)
+			if Config then
+				Object.Name = Config.Name
+				AreaCache[Config.Name] = Config
+			end
+		end, true)
+		
+		local function RequestEnableTooltip()
+			local PreviousArea = {Name = nil, Level = 0}
+			local NextArea = {Name = nil, Level = math.huge}
+			
+			CycleThroughAllAreas(function(Object)
+				local Config = AreaCache[Object.Name]
+				
+				local Color = Config.Color 
+					or (Object:FindFirstChild("Base") and Object.Base.Color)
+
+				if Config and Config.Level <= NextArea.Level and Config.Level >= Level.Value then
+					if NextArea.Color and NextArea.Level == Config.Level and not Color then
+						return
+					end
+					NextArea = {Name = Config.Name, Level = Config.Level, Color = Color}
+				end
+			end)
+			
+			CycleThroughAllAreas(function(Object)
+				local Config = AreaCache[Object.Name]
+				
+				local Color = Config.Color 
+					or (Object:FindFirstChild("Base") and Object.Base.Color)
+				
+				if Config and Config.Level > PreviousArea.Level and Config.Level < NextArea.Level then
+					PreviousArea = {Name = Config.Name, Level = Config.Level, Color = Color}
+				end
+			end)
+			
+			local CurrentLevelProgress = Level.Value - (PreviousArea.Level or 0)
+			local NextLevelDifference = (NextArea.Level ~= math.huge and NextArea.Level or (PreviousArea.Level or 0)) - (PreviousArea.Level or 0)
+			
+			local Percentage = math.clamp(CurrentLevelProgress / NextLevelDifference, 0, 1)
+			
+			local RequestedColor = (NextArea.Level == math.huge and PreviousArea.Color or NextArea.Color) :: Color3
+			RequestedColor = RequestedColor and ColorModule:ConvertToRawHSV(RequestedColor)
+			
+			ProgressCanvas.GroupColor3 = RequestedColor or LevelText.TextColor3
+			
+			local Area = `{PreviousArea.Name or "Spawn"}`
+			if NextArea.Name then
+				Area ..= ` • {NextArea.Name or "Max"}`
+			end
+			
+			ProgressFrame.Area.Text = Area
+			ProgressFrame.Percentage.Text = `<b>{math.round(Percentage * 100)}%</b> Progress to next area`
+			
+			local Statistics = (NextArea.Level == math.huge and `Level requirement: <b>{FormatNumber(PreviousArea.Level, "Suffix")}</b>`)
+				or `Level requirements: <b>{FormatNumber(Level.Value, "Suffix")}</b>`
+			
+			if NextArea.Level ~= math.huge then
+				Statistics ..= ` / {NextArea.Level ~= math.huge and FormatNumber(NextArea.Level, "Suffix") or "Max"}`
+			end
+			
+			ProgressFrame.Statistics.Text = Statistics
+			LevelText.UIPadding.PaddingBottom = UDim.new(0, -2)
+			
+			ProgressFrame.Fill.UIGradient.Offset = Vector2.new(0, 0)
+			Tween:Play(ProgressFrame.Fill.UIGradient, {0.5, "Circular"}, {Offset = Vector2.new(Percentage, 0)})
+			
+			TooltipController:StartTooltipFrame(ProgressCanvas)
+		end
+		
+		local function RequestCloseTooltip()
+			LevelText.UIPadding.PaddingBottom = UDim.new(0, 0)
+			
+			TooltipController:StopTooltipFrame(ProgressCanvas)
+		end
+		
+		-- Connections
+		LevelText.MouseEnter:Connect(RequestEnableTooltip)
+		LevelText.MouseLeave:Connect(RequestCloseTooltip)
+	end
+
+	---- Scaling -------------------------------------------------------------------
+	
+	local ReferenceSize = 824
+	
+	local Clamp1 = GameConfig.UIScaleClamp[1]
+	if UserInputService.TouchEnabled then
+		Clamp1 *= 0.5
+	end
+	
+	local function UpdateScale(UIScale)
+		local Scale = Camera.ViewportSize.Y / ReferenceSize
+		UIScale.Scale = math.clamp(Scale, Clamp1, GameConfig.UIScaleClamp[2])
+	end
+
+	local function UpdateInverseScale(UIScale)
+		local Scale = Camera.ViewportSize.Y / ReferenceSize
+		local NewScale = 1 / math.clamp(Scale, Clamp1, GameConfig.UIScaleClamp[2])
+		UIScale.Scale = NewScale
+	end
+
+	local function AdaptScreenSize()
+		for _, UIScale: UIScale in CollectionService:GetTagged("UIScale") do
+			UpdateScale(UIScale)
+		end
+		
+		if not UserInputService.TouchEnabled then
+			for _, UIScale: UIScale in CollectionService:GetTagged("InverseScale") do
+				UpdateInverseScale(UIScale)
+			end
+		end
+
+		UpdateNotificationScale()
+	end
+	
+	if GameConfig.ScaleUIs then
+		if not UserInputService.TouchEnabled then
+			CollectionService:GetInstanceAddedSignal("InverseScale"):Connect(UpdateInverseScale)
+		end
+		
+		CollectionService:GetInstanceAddedSignal("UIScale"):Connect(UpdateScale)
+		
+		Camera:GetPropertyChangedSignal("ViewportSize"):Connect(AdaptScreenSize)
+		AdaptScreenSize()
+	end
+	
+	-- Mobile UI changes
+	if UserInputService.TouchEnabled then
+		if GameConfig.MobileAdaptUI then
+			local UIPadding = Instance.new("UIPadding")
+			UIPadding.PaddingTop = UDim.new(0, 70)
+			UIPadding.Parent = BottomLeft
+
+			BottomLeft.UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+
+			UIPadding:Clone().Parent = BottomRight
+
+			BottomRight.UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+			BottomRight.Bottom.Notifications.UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+			BottomRight.Label.LayoutOrder = -10
+			BottomRight.Bottom.LayoutOrder = -9
+
+			local Keybind = Player.PlayerGui:WaitForChild("Keybind")
+			Keybind.Padding.PaddingBottom = UDim.new(0, 0)
+			Keybind.Padding.PaddingTop = UDim.new(0, 280)
+			Keybind.UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+		end
+		
+		local InventoryScreenGui = Player.PlayerGui:WaitForChild("Inventory")
+		
+		local AbsoluteSizeY = InventoryScreenGui.AbsoluteSize.Y 
+		local AbsoluteSizeX = InventoryScreenGui.AbsoluteSize.X 
+		
+		if GameConfig.MobileBackpackUIScaling and GameConfig.MobileBackpackUIScaling ~= 1 then
+			AbsoluteSizeY *= GameConfig.MobileBackpackUIScaling
+		end
+		
+		if GameConfig.MobileUsesLessSlots then
+			AbsoluteSizeX = 500
+		end
+		
+		InventoryScreenGui.Main.Inventory.Size = UDim2.fromOffset(AbsoluteSizeX, AbsoluteSizeY)
+	end
+	
+	---- Update UI themes & fonts (future?) -------------------------------------------------------------------
+	
+	for Name, Data in GameConfig.LeaderstatIcons do
+		local Color = Data.Color or GameConfig.UIColors.PrimaryColor
+		local Image = `rbxassetid://{Data.Image or ""}`
+		
+		local function RequestItemAdded(Item)
+			if Item:IsA("ImageLabel") then
+				Item.ImageColor3 = Color
+				Item.Image = Image
+			elseif Item:IsA("TextLabel") then
+				Item.TextColor3 = Color
+			end
+		end
+		
+		for _, Tagged in CollectionService:GetTagged("Leaderstat" .. Name) do
+			task.spawn(RequestItemAdded, Tagged)
+		end
+		
+		CollectionService:GetInstanceAddedSignal("Leaderstat" .. Name):Connect(RequestItemAdded)
 	end
 end

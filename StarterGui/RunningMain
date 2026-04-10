@@ -1,0 +1,119 @@
+local UIS = game:GetService("UserInputService")
+local DefaultFOV = 75
+
+local player = game.Players.LocalPlayer
+
+local char = player.Character or player.CharacterAdded:Wait()
+local hum = char:WaitForChild("Humanoid")
+
+local Attributes = hum:WaitForChild("Attributes")
+local WalkSpeedConfig = Attributes:WaitForChild("WalkSpeed")
+
+local WALKSPEED = 20 
+local RUNSPEED = WALKSPEED * 1.25
+
+local run = false
+local isMoving = false
+
+local Track1 
+local runs = char:WaitForChild("Running")
+
+-- Helper function to manage animation state safely
+local function UpdateAnimation()
+	if not Track1 then
+		Track1 = hum:LoadAnimation(script.Run)
+	end
+
+	-- Only play if sprint is toggled ON and the player is actively moving
+	if run and isMoving then
+		if not Track1.IsPlaying then
+			Track1:Play()
+		end
+	else
+		-- Stop the animation if they stop moving OR toggle sprint off
+		if Track1.IsPlaying then
+			Track1:Stop()
+		end
+	end
+end
+
+-- Centralized function to manage FOV, Speed, and States safely
+local function SetSprint(state)
+	run = state
+
+	if run then
+		-- Start Sprinting
+		hum.WalkSpeed = RUNSPEED
+		runs.Value = true
+
+		local properties = {FieldOfView = DefaultFOV + 15}
+		local Info = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0.1)
+		game:GetService("TweenService"):Create(game.Workspace.CurrentCamera, Info, properties):Play()    
+	else
+		-- Stop Sprinting
+		hum.WalkSpeed = WALKSPEED
+		runs.Value = false
+
+		local properties = {FieldOfView = DefaultFOV}
+		local Info = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0.1)
+		game:GetService("TweenService"):Create(game.Workspace.CurrentCamera, Info, properties):Play()
+	end
+
+	UpdateAnimation()
+end
+
+local function UpdateSpeedVariables()
+	local Total = 0
+	local slowPercentage = WalkSpeedConfig:GetAttribute("CombatSlow")
+	local isSlowed = slowPercentage ~= nil 
+
+	-- Sum up all standard attributes (Base + Armor + Etc)
+	for Name, Value in pairs(WalkSpeedConfig:GetAttributes()) do
+		if type(Value) == "number" and Name ~= "CombatSlow" then
+			Total = Total + Value
+		end
+	end
+
+	-- Apply percentage-based slow to the total sum
+	if isSlowed and type(slowPercentage) == "number" then
+		Total = Total * (1 - slowPercentage)
+	end
+
+	WALKSPEED = Total
+	RUNSPEED = WALKSPEED * 1.25
+
+	if isSlowed and run then
+		SetSprint(false) -- Instantly disable sprint (restores FOV & Animations)
+	else
+		-- Just apply WalkSpeed modifications smoothly
+		task.defer(function()
+			if run then
+				hum.WalkSpeed = RUNSPEED
+			else
+				hum.WalkSpeed = WALKSPEED
+			end
+		end)
+	end
+end
+
+WalkSpeedConfig.AttributeChanged:Connect(UpdateSpeedVariables)
+UpdateSpeedVariables()
+
+-- Listen to the Humanoid's speed to detect if we are walking or standing still
+hum.Running:Connect(function(speed)
+	isMoving = speed > 0.1 -- True if moving, false if standing still
+	UpdateAnimation()
+end)
+
+UIS.InputBegan:Connect(function(input, gameprocessed)
+	if gameprocessed then return end
+
+	if input.KeyCode == Enum.KeyCode.LeftControl then
+		if char:FindFirstChild("Ragdoll") then return end
+
+		-- Prevent starting a sprint if CombatSlow is active
+		if WalkSpeedConfig:GetAttribute("CombatSlow") then return end
+
+		SetSprint(not run) -- Flips the boolean (true to false, false to true)
+	end
+end)

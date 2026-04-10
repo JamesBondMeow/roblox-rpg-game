@@ -20,14 +20,14 @@ function Knockback:Activate(Torso, Distance, Position0, Position1)
 	if not Torso then
 		return
 	end
-	
+
 	local MobInstance = Torso.Parent
 	if MobInstance:IsA("Model") and AttributeModule:GetAttribute(MobInstance, "NoKnockback") then
 		return
 	end
-	
+
 	local Speed = (10 * Distance) / (Torso.Size.Y / 2)
-	
+
 	if math.abs(Speed) > 25 then 
 		local KnockbackVelocity = Instance.new("BodyVelocity")
 		KnockbackVelocity.Parent = Torso
@@ -35,19 +35,26 @@ function Knockback:Activate(Torso, Distance, Position0, Position1)
 		KnockbackVelocity.MaxForce = Vector3.one * 80000
 		KnockbackVelocity.P = 20
 
-		local Unit = (Position0 - Position1).Unit
+		-- Flatten the positions to ignore height differences
+		local flatPos0 = Vector3.new(Position0.X, 0, Position0.Z)
+		local flatPos1 = Vector3.new(Position1.X, 0, Position1.Z)
+
+		local direction = flatPos0 - flatPos1
+
+		-- Prevent math errors if they are standing in the exact same mathematical spot
+		if direction.Magnitude < 0.001 then
+			direction = Vector3.new(math.random(-10, 10), 0, math.random(-10, 10))
+		end
+
+		local Unit = direction.Unit
 
 		local Velocity = Unit * Speed * -1
-		Velocity = Vector3.new(Velocity.X, math.max(Velocity.Y, 0), Velocity.Z)
+
+		-- Apply the pure horizontal velocity, plus a small constant vertical bump to overcome ground friction
+		Velocity = Vector3.new(Velocity.X, 15, Velocity.Z)
 
 		KnockbackVelocity.Velocity = Velocity
-
-		task.delay(0.2, function()
-			KnockbackVelocity:Destroy()
-
-			task.wait(0.8)
-			Torso.AssemblyLinearVelocity = Vector3.zero
-		end)
+		game.Debris:AddItem(KnockbackVelocity, 0.1)
 	end
 end
 

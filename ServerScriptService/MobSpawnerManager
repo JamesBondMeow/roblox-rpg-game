@@ -1,0 +1,79 @@
+-- ServerScriptService/MobSpawnerManager.lua
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- [CONFIG] Location of your Mob Models
+local MobModels = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Entities") 
+
+local function pickRandomMob(spawnTable)
+	local totalWeight = 0
+	for _, entry in ipairs(spawnTable) do
+		totalWeight += entry[2]
+	end
+
+	local randomValue = math.random() * totalWeight
+	local currentWeight = 0
+
+	for _, entry in ipairs(spawnTable) do
+		currentWeight += entry[2]
+		if randomValue <= currentWeight then
+			return entry[1]
+		end
+	end
+	return nil
+end
+
+local function initializeSpawner(spawnerPart)
+	local configModule = spawnerPart:FindFirstChild("SpawnConfig")
+	if not configModule then return end
+
+	local config = require(configModule)
+	local currentMob = nil
+
+	local function spawnMob()
+		if currentMob then return end
+
+		local mobName = pickRandomMob(config.SpawnTable)
+		if not mobName then return end
+
+		local mobTemplate = MobModels:FindFirstChild(mobName, true)
+		if not mobTemplate then
+			warn("MobSpawner: Could not find mob model for '" .. mobName .. "'")
+			return
+		end
+
+		local newMob = mobTemplate:Clone()
+
+		-- Position the mob
+		newMob:PivotTo(spawnerPart.CFrame + Vector3.new(0, 1, 0)) -- Added slight Y offset to prevent stuck in floor
+
+		-- [CRITICAL] Tag it as Managed so MobLib knows NOT to use internal respawn logic
+		newMob:SetAttribute("ManagedSpawn", true) 
+
+		-- Tag it so MobLib picks it up
+		CollectionService:AddTag(newMob, "Mob")
+		newMob.Parent = workspace:FindFirstChild("Mobs") or workspace
+
+		currentMob = newMob
+
+		-- Listen for the mob being destroyed (Handled by MobLib cleanup)
+		newMob.Destroying:Connect(function()
+			currentMob = nil
+			-- Wait for respawn time defined in config, or default to 15
+			task.wait(config.RespawnTime or 15)
+			spawnMob()
+		end)
+	end
+
+	-- Initial spawn
+	spawnMob()
+end
+
+-- Initialize existing spawners
+for _, spawner in ipairs(CollectionService:GetTagged("MobSpawner")) do
+	task.spawn(initializeSpawner, spawner)
+end
+
+-- Listen for new spawners
+CollectionService:GetInstanceAddedSignal("MobSpawner"):Connect(initializeSpawner)

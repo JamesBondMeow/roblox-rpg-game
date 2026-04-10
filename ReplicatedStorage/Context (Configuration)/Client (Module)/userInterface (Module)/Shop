@@ -1,8 +1,7 @@
 --[[
 	Shop
 	
-	ShopGuiScript handles code relating to the shop gui. The code to open up the interface by
-	ProximityPrompt is held here as well.
+	ShopGuiScript handles code relating to the shop gui.
 ]]
 
 --> Services
@@ -45,7 +44,7 @@ return function(Gui)
 	if not GameConfig.EnabledFeatures.BuyShop then
 		return
 	end
-	
+
 	--> References
 	local MainFrame = Gui:WaitForChild("MainFrame")
 	local ExitButton = MainFrame:WaitForChild("Display"):WaitForChild("ExitButton")
@@ -53,33 +52,28 @@ return function(Gui)
 
 	local AmountTextBox = PopupFrame:WaitForChild("Content"):WaitForChild("List"):WaitForChild("Amount")
 	local PurchaseButton = PopupFrame:WaitForChild("Content"):WaitForChild("List"):WaitForChild("Purchase")
-	
+
 	--> Variables
 	local ItemSlots = {}
 	local SlotConnections = {}
-	
+
 	local isOpen = false
 	local RequestBuyAmount = nil
-	
+
+	-- Sub-Category Tracking
+	local SubCategoryCache = {} -- [CacheKey] = true
+	local SubCategoryOrder = 1 
+
 	--------------------------------------------------------------------------------
-	
+
 	local ActiveColor = ColorModule:GetBaseColor()
 
 	local function UpdatePopupColor(Color: Color3)
 		local Titlebar = PopupFrame:WaitForChild("Titlebar")
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
-
-		Titlebar.BackgroundColor3 = Primary
-		PopupFrame.Titlebar.BackgroundColor3 = Primary
-		PopupFrame.ExitButton.TextColor3 = Secondary
-		PopupFrame.Content.List.Purchase.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Purchase.TextColor3 = Secondary
-		PopupFrame.Content.List.Amount.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Amount.PlaceholderColor3 = Secondary:Lerp(Primary, 0.05)
-		PopupFrame.Content.List.Amount.TextColor3 = Secondary
+		
 		PopupFrame.Content.ItemIcon.BackgroundColor3 = Secondary
 		PopupFrame.BackgroundColor3 = Background
-		PopupFrame.UIStroke.Color = Background
 
 		return Primary, Secondary, Background
 	end
@@ -92,18 +86,11 @@ return function(Gui)
 		ActiveColor.Secondary = Secondary
 		ActiveColor.Background = Background
 
-		Titlebar.BackgroundColor3 = Primary
-		Titlebar.TextColor3 = Secondary
-
-		MainFrame.Display.ExitButton.TextColor3 = Secondary
-		MainFrame.Display.Content.ScrollingFrame.ScrollBarImageColor3 = Primary
 		MainFrame.Display.Content.Frame.BackgroundColor3 = Secondary
 		MainFrame.Display.BackgroundColor3 = Background
-		MainFrame.Display.UIStroke.Color = Background
 	end
 
-	-- Sets slot colors based off the active colors, and the given state value.
-	-- If true, the base uses primary (brighter/owned). If false, the base uses secondary (darker/default)
+	-- Sets slot colors based off the active colors
 	local function UpdateSlotColor(Slot)
 		local Color = ColorModule:GetPrimaryColor(Slot.Item)
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
@@ -112,43 +99,40 @@ return function(Gui)
 		local Foreground = Primary
 		local Frame = Slot.Frame
 
-		Frame.BackgroundColor3 = Background
+		Frame.BackgroundColor3 = Foreground
 		Frame.ItemIcon.BackgroundColor3 = Background
-		Frame.ItemName.TextColor3 = Foreground
-		Frame.ItemLevel.TextColor3 = Foreground
-		Frame.ItemCost.TextColor3 = Foreground
 		Frame.Locked.Icon.ImageColor3 = Foreground
 		Frame.Locked.TextLabel.TextColor3 = Foreground
 		Frame.Owned.Icon.ImageColor3 = Foreground
 		Frame.Owned.TextLabel.TextColor3 = Foreground
+		Frame.ItemIcon.UIStrokeW.Color = Foreground
 
 		return Primary, Secondary, Background
 	end
 
-	-- This code is really ugly, I may revamp it in the future
 	local function UpdateSlot(Slot)
 		local ItemValue = ItemsFolder:WaitForChild(Slot.Item.Type):FindFirstChild(Slot.Item.Name)
 		local ItemLocked = Level.Value < Slot.Item.Config.Level
-		
+
 		for _, Connection in SlotConnections[Slot] or {} do
 			Connection:Disconnect()
 			Connection = nil
 		end
-		
+
 		SlotConnections[Slot] = {}
-		
+
 		local Frame = Slot.Frame
 
 		local Primary, Secondary, Background = UpdateSlotColor(Slot)
-		
+
 		local Connections = SetTooltipListener(Frame.ItemIcon, Slot.Item.Instance, Primary, Secondary)
 		SlotConnections[Slot] = Connections
-		
+
 		local isStackable = GameConfig.CanItemsStack 
 			or GameConfig.Categories[Slot.Item.Type].IsStackable
-		
+
 		local isOwned = ItemValue and (not isStackable or Slot.Item.Config.Cost[4]) and not (ItemValue:IsA("NumberValue") and ItemValue.Value < 1)
-		
+
 		if isOwned then
 			Frame.BackgroundTransparency = 0.25
 			Frame.AutoButtonColor = false
@@ -191,7 +175,7 @@ return function(Gui)
 
 	local PopupItem = nil :: Instance
 	local ListenerConnections = {}
-	
+
 	local Content = PopupFrame:WaitForChild("Content")
 
 	local function OpenPopupFrame(Item)
@@ -203,12 +187,12 @@ return function(Gui)
 		end
 
 		local ItemInstance = PopupItem.Instance
-		
+
 		local Color = ColorModule:GetPrimaryColor(Item)
 		local Primary, Secondary, Background = UpdatePopupColor(Color)
-		
+
 		ListenerConnections = SetTooltipListener(Content.ItemIcon, ItemInstance, Primary, Secondary)
-		
+
 		if not Item.Config.IconId then
 			Content.ItemIcon.Label.Visible = false
 		else
@@ -220,21 +204,21 @@ return function(Gui)
 		local MaxBuyable = math.floor(Currency.Value / PopupItem.Config.Cost[3])
 
 		AmountTextBox.PlaceholderText = FormatNumber(math.min(GameConfig.Categories[PopupItem.Type].BulkBuyMax, MaxBuyable), "Suffix")
-		
+
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Item.Type].IsStackable
 		AmountTextBox.Visible = IsStackable
 
 		Content.ItemName.Text = Item.Name
 		Content.ItemType.Text = Item.Type
 		Content.ItemLevel.Text = `<b>Level</b> {FormatNumber(Item.Config.Level, "Suffix")}`
-		
+
 		Content.ItemCost.Text = `-{FormatNumber(Item.Config.Cost[3], "Suffix")} {Item.Config.Cost[2]}`
 		Content.ItemCost.TextColor3 = Item.Config.Cost[1] == "Statistic" 
 			and ((GameConfig.LeaderstatIcons[Currency.Name] and GameConfig.LeaderstatIcons[Currency.Name].Color) or GameConfig.UIColors.PrimaryColor)
 			or (ContentLibrary[Item.Config.Cost[1]][Item.Config.Cost[2]].SpecialColor or GameConfig.Categories[Item.Config.Cost[1]].Color or GameConfig.UIColors.PrimaryColor)
 
 		UpdatePopupInfo(Item, Content)
-		
+
 		AmountTextBox.Text = " "
 		task.defer(function()
 			AmountTextBox.Text = ""
@@ -251,11 +235,11 @@ return function(Gui)
 
 	local function ClearFocus()
 		AmountTextBox.Text = ""
-		
+
 		Content.ItemCost.Text = ((PopupItem and PopupItem.Config.Cost) 
 			and `-{FormatNumber(PopupItem.Config.Cost[3], "Suffix")} {PopupItem.Config.Cost[2]}`) 
 			or "0"
-		
+
 		RequestBuyAmount = nil
 	end
 
@@ -263,25 +247,25 @@ return function(Gui)
 		if not PopupItem then 
 			return 
 		end
-		
+
 		local RequestedBuyAmount = (GameConfig.CanRequestItemWithNoAmountInput and math.clamp(RequestBuyAmount or 1, 1, math.huge))
 			or RequestBuyAmount
 			or not GameConfig.CanItemsStack and not GameConfig.Categories[PopupItem.Type].IsStackable and 1
-		
+
 		local OldRequestedBuyAmount = RequestedBuyAmount
 		local OldPopupItem = PopupItem
-		
+
 		if not RequestedBuyAmount or RequestedBuyAmount < 1 or PopupFrame.GroupTransparency == 1 then
 			return
 		end
-		
+
 		local Success, Response = EventModule:InvokeServer("BuyItem", OldPopupItem.Type, OldPopupItem.Name, RequestedBuyAmount)
 		if Success then
 			ClearFocus()
 			ClosePopupFrame()
-			
+
 			UpdateSlot(ItemSlots[OldPopupItem.Name])
-			
+
 			local newText = `{OldPopupItem.Name} (x{FormatNumber(OldRequestedBuyAmount, "Suffix")}) has been purchased!`
 			CreateNotification("Purchase Success!", newText, 12900311398)
 			SFX:Play2D(GameConfig.PurchaseSFX[1], {Volume = GameConfig.PurchaseSFX[2]})
@@ -301,12 +285,12 @@ return function(Gui)
 
 		local Currency = PopupItem.Config.Cost[1] == "Statistic" and pData.Stats[PopupItem.Config.Cost[2]] or pData.Items[PopupItem.Config.Cost[1]]:FindFirstChild(PopupItem.Config.Cost[2])
 		local MaxBuyable = math.floor((Currency and Currency.Value or 0) / PopupItem.Config.Cost[3])
-		
+
 		if Amount ~= nil then
 			if PopupItem then
 				Content.ItemCost.Text = `-{FormatNumber(PopupItem.Config.Cost[3] * Amount, "Suffix")} {PopupItem.Config.Cost[2]}`
 			end
-			
+
 			Amount = math.min(Amount, GameConfig.Categories[PopupItem.Type].BulkBuyMax, MaxBuyable)
 			AmountTextBox.Text = Amount
 		end
@@ -319,21 +303,52 @@ return function(Gui)
 	end)
 
 	---- MAIN FRAME LOGIC ----------------------------------------------------------
-	
+
 	local CategoryFrames = {}
-	
+
+	-- Helper to get or create sub-category frames
+	local function GetOrCreateSubCategory(MainCategoryFrame, SubCategoryName, IsDefault)
+		local Container = MainCategoryFrame.Items
+
+		local SubFrameName = "Sub_" .. SubCategoryName
+		local SubFrame = Container:FindFirstChild(SubFrameName)
+
+		if not SubFrame then
+			SubFrame = script:WaitForChild("SubCategoryTemplate"):Clone()
+			SubFrame.Name = SubFrameName
+
+			local Header = SubFrame:FindFirstChild("Header")
+			if Header then
+				if MainCategoryFrame:FindFirstChild("Header") then
+					Header.TextColor3 = MainCategoryFrame.Header.TextColor3
+				end
+
+				if IsDefault then
+					Header.Visible = false
+				else
+					Header.Text = SubCategoryName
+					Header.Visible = true
+				end
+			end
+
+			SubFrame.Visible = true
+			SubFrame.Parent = Container
+		end
+
+		return SubFrame:WaitForChild("Items")
+	end
+
 	local function OpenShop(Shop, ShopConfig)
 		isOpen = true
-		
+
 		for _, Slot in ItemSlots do
 			Slot.Frame.Visible = false
 			Slot.Frame.Parent = nil
 		end
-		
+
 		MainFrame.Display.Body.Titlebar.Text = ShopConfig.Name
 		UpdateShopColor(ShopConfig.Color)
 
-		-- Grab the slots that need to appear for this shop
 		local SlotsToOpen = {}
 		for Id, ItemInfo in ShopConfig.Items do
 			local ItemType = ItemInfo[1]
@@ -341,55 +356,122 @@ return function(Gui)
 
 			local Item = ContentLibrary[ItemType][ItemName]
 			local Slot = ItemSlots[ItemName]
-			
-			if not Item then
-				warn(`Item "{ItemName}" failed to load in the shop since the item doesn't exist (is the name correct?).`)
-				continue
-			end
-			
-			if not Slot then
-				warn(`Item "{ItemName}" doesn't have a suggested slot: either Item.Config.Cost is nil or another issue arised (likely to do with preloading).`)
-				continue
-			end
+
+			if not Item or not Slot then continue end
 
 			table.insert(SlotsToOpen, Slot)
 		end
 
-		-- Sort the slots by item level
 		table.sort(SlotsToOpen, function(A, B)
 			return A.Item.Config.Level < B.Item.Config.Level
 		end)
 
 		for LayoutOrder, Slot in SlotsToOpen do
 			UpdateSlot(Slot)
-			
+
+			local ItemConfig = Slot.Item.Config
+			local ItemType = Slot.Item.Type
+
+			-- Sub-Category Logic
+			local SubType = nil
+			local IsDefault = false
+
+			if ItemType == "Armor" then
+				SubType = ItemConfig.ArmorType
+				if not SubType then SubType = "General"; IsDefault = true end
+			elseif ItemType == "Tool" and ItemConfig.WeaponType == "Melee" then
+				if ItemConfig.ToolType == "Pickaxe" then 
+					SubType = "Pickaxe"
+				elseif ItemConfig.ToolType == "Sickle" then 
+					SubType = "Sickle"
+				else 
+					-- Sort weapons into sub-categories based on their exact names
+					local itemName = Slot.Item.Name
+					if string.find(itemName, "Greatsword") then
+						SubType = "Greatsword"
+					elseif string.find(itemName, "Dagger") then
+						SubType = "Dagger"
+					elseif string.find(itemName, "Sword") then
+						SubType = "Sword"
+					else 
+						SubType = "Melee" -- Fallback for blunt weapons or other tool types
+					end 
+				end
+			elseif ItemType == "Consumable" and ItemConfig.WeaponType == "Food" then
+				if ItemConfig.IsPotion then SubType = "Potion"
+				else SubType = "Food" end
+			elseif ItemType == "Material" then
+				SubType = ItemConfig.MaterialType
+				if not SubType then SubType = "General"; IsDefault = true end
+			else
+				SubType = "General"; IsDefault = true
+			end
+
+			local TargetGrid = GetOrCreateSubCategory(CategoryFrames[ItemType], SubType, IsDefault)
+
+			-- Sorting Order for SubCats
+			local CacheKey = ItemType .. "_" .. SubType
+			if not SubCategoryCache[CacheKey] then
+				SubCategoryCache[CacheKey] = true
+				local SubFrame = TargetGrid.Parent
+				if IsDefault then
+					SubFrame.LayoutOrder = 9999
+				else
+					SubFrame.LayoutOrder = SubCategoryOrder
+					SubCategoryOrder += 1
+				end
+			end
+
 			Slot.Frame.LayoutOrder = LayoutOrder
 			Slot.Frame.Visible = true
-			Slot.Frame.Parent = CategoryFrames[Slot.Item.Type].Items
+			Slot.Frame.Parent = TargetGrid
 		end
 
 		MainFrame.Display.Content.ScrollingFrame.CanvasSize = UDim2.fromOffset(0, MainFrame.Display.Content.ScrollingFrame.UIListLayout.AbsoluteContentSize.Y)
 
 		Gui.Enabled = true
 		Gui.Padding.PaddingTop = UDim.new(0, 50)
-		
+
 		ClosePopupFrame()
 		SetCanvasGroupVisibility(MainFrame, true)
-		
+
 		Tween:Play(Gui.Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
 	end
 
 	local function CloseShop()
 		isOpen = false
 
+		-- Unparent Slots to prevent them from being destroyed
+		for _, Slot in pairs(ItemSlots) do
+			if Slot.Frame then
+				Slot.Frame.Parent = nil
+				Slot.Frame.Visible = false
+			end
+		end
+
 		ClosePopupFrame()
 		SetCanvasGroupVisibility(MainFrame, false)
-		
+
 		Tween:Play(Gui.Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 50)})
-		
+
+		-- Destroy Sub-Categories
+		for _, MainCategory in pairs(CategoryFrames) do
+			if MainCategory:FindFirstChild("Items") then
+				for _, Child in pairs(MainCategory.Items:GetChildren()) do
+					if string.sub(Child.Name, 1, 4) == "Sub_" then
+						Child:Destroy()
+					end
+				end
+			end
+		end
+
+		-- Reset Cache
+		SubCategoryCache = {}
+		SubCategoryOrder = 1
+
 		return true
 	end
-	
+
 	local function RequestCheck()
 		return isOpen
 	end
@@ -404,12 +486,12 @@ return function(Gui)
 	for _, Shop in CollectionService:GetTagged("BuyShop") do
 		task.spawn(PerShop, Shop)
 	end
-	
+
 	---- Categories ---------------------------------------------------------------------
-	
+
 	local InventoryList = MainFrame.Display.Content.ScrollingFrame
 	local CategoryButtons = MainFrame.Display:WaitForChild("Categories")
-	
+
 	local CategorySlots = {}
 
 	local RecentClosestFrame = nil
@@ -478,6 +560,9 @@ return function(Gui)
 		Frame.Visible = false
 		Frame.Parent = InventoryList
 
+		-- Track Main Category Frame
+		CategoryFrames[Name] = Frame
+
 		local function CountVisibleItems()
 			local Visible = 0
 
@@ -491,10 +576,11 @@ return function(Gui)
 		end
 
 		Frame.Items.ChildAdded:Connect(function(Child)
-			Child:GetPropertyChangedSignal("Visible"):Connect(function()
-				Frame.Visible = CountVisibleItems() > 0
-			end)
-
+			if Child:IsA("GuiObject") then
+				Child:GetPropertyChangedSignal("Visible"):Connect(function()
+					Frame.Visible = CountVisibleItems() > 0
+				end)
+			end
 			Frame.Visible = CountVisibleItems() > 0
 		end)
 
@@ -515,7 +601,7 @@ return function(Gui)
 		CategorySlot.Name = Name
 
 		CategorySlot.BackgroundColor3 = Primary
-		CategorySlot.TextColor3 = Secondary
+		CategorySlot.TextColor3 = Primary
 
 		CategorySlot.Text = string.sub(Name, 0, 1)
 
@@ -555,14 +641,13 @@ return function(Gui)
 		end
 
 		CategorySlots[Name] = {Frame = CategorySlot, Primary = Primary, Secondary = Secondary, Background = Background}
-		CategoryFrames[Name] = Frame
 	end
 
 	InventoryList:GetPropertyChangedSignal("CanvasPosition"):Connect(OnUpdatedCanvasPosition)
 	OnUpdatedCanvasPosition(RecentClosestFrame)
-	
+
 	---- Setup ---------------------------------------------------------------------
-	
+
 	for _, Items in ContentLibrary do
 		for _, Item in Items do
 			task.spawn(function()
@@ -582,14 +667,14 @@ return function(Gui)
 				Frame.ItemLevel.Text = `Level <b>{FormatNumber(Item.Config.Level, "Suffix")}</b>`
 
 				local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Item.Type].IsStackable
-				local PurchasesSuffix = (not Item.Config.Cost[4]) and IsStackable and ` <font size="13" transparency = "0.4" weight="Medium">(Multiple)</font>` or ""
+				local PurchasesSuffix = (not Item.Config.Cost[4]) and IsStackable and ` <font size="14" transparency = "0" weight="Medium">(Multiple)</font>` or ""
 				Frame.ItemCost.Text = FormatNumber(Item.Config.Cost[3], "Suffix") .." ".. Item.Config.Cost[2] .. PurchasesSuffix
 
 				if Item.Config.IconId then
 					Frame.ItemIcon.Label.Image = tonumber(Item.Config.IconId) and `rbxassetid://{Item.Config.IconId}` or Item.Config.IconId or ""
 				end
 				Frame.Visible = false
-				--Frame.Parent = CategoryFrames[Item.Type].Items
+				-- Parent is set dynamically in OpenShop
 
 				Frame.Activated:Connect(function()
 					local ItemValue = ItemsFolder:WaitForChild(Item.Type):FindFirstChild(Item.Name)

@@ -61,29 +61,29 @@ function PropLib.new(PropInstance: Model): Props.Prop
 	if not Config then
 		error(("OreLib.new: Passed ore '%s' is missing vital components."):format(PropInstance.Name))
 	end
-	
+
 	local AttributeFolder = PropInstance:FindFirstChild("HeldAttributes") 
 		or AttributeModule:CreateAttributeFolder(PropInstance)
-	
+
 	if AttributeModule:GetAttribute(PropInstance, "Loaded") then
 		return 
 	end
-	
+
 	local Prop = setmetatable({}, Prop)
 	Prop.Instance = PropInstance
 	Prop.Config = Config
 	Prop.Hitbox = PropInstance:FindFirstChild("Hitbox")
-	
+
 	Prop.Base = {}
 	Prop.Material = {}
-	
+
 	Prop.Attributes = AttributeFolder
-	
+
 	---- Load in pre-clone stuff
-	
+
 	local function SetRandomPivot(Pivot)
 		Pivot = Pivot or PropInstance:GetPivot()
-		
+
 		local Position = Pivot.Position + Vector3.new(Random:NextNumber(-Config.RespawnRadius, Config.RespawnRadius), 0, Random:NextNumber(-Config.RespawnRadius, Config.RespawnRadius))
 		local NewPivot = nil
 
@@ -95,18 +95,18 @@ function PropLib.new(PropInstance: Model): Props.Prop
 			NewPivot = CFrame.new(NewPosition + Offset) * Pivot.Rotation
 			PropInstance:PivotTo(NewPivot)
 		end
-		
+
 		return NewPivot
 	end
-	
+
 	local InitiallyLoaded = AttributeModule:GetAttribute(PropInstance, "InitiallyLoaded")
 	if not InitiallyLoaded then
 		for _, Part in PropInstance:GetDescendants() do
 			if Part:IsA("BasePart") then
-				Part.CollisionGroup = "Mobs"
+				Part.CollisionGroup = "Default"
 			end
 		end
-		
+
 		-- Set random pivot
 		if Config.RespawnRadius and Config.RespawnRadius > 0 then
 			local NewPivot = SetRandomPivot()
@@ -114,16 +114,16 @@ function PropLib.new(PropInstance: Model): Props.Prop
 				AttributeModule:SetAttribute(PropInstance, "OriginPivot", NewPivot)
 			end
 		end
-		
+
 		AttributeModule:SetAttribute(PropInstance, "InitiallyLoaded", true)
 	end
-	
+
 	Prop._Copy = PropInstance:Clone()
-	
+
 	---- Initialize
-	
+
 	AttributeModule:SetAttribute(PropInstance, "Loaded", true)
-	
+
 	-- Set pivot of ore if respawned
 	if InitiallyLoaded then
 		local OriginPivot = AttributeModule:GetAttribute(PropInstance, "OriginPivot")
@@ -133,7 +133,7 @@ function PropLib.new(PropInstance: Model): Props.Prop
 			PropInstance:PivotTo(OriginPivot)
 		end
 	end
-	
+
 	-- Set random material orientations
 	for _, Part in PropInstance:GetDescendants() do
 		if Part.Name == "Material" then
@@ -143,29 +143,55 @@ function PropLib.new(PropInstance: Model): Props.Prop
 			table.insert(Prop.Base, Part)
 		end
 	end
-	
+
 	Prop.Scale = PropInstance:GetScale()
 	Prop.Origin = PropInstance:GetPivot()
-	
+
 	Prop.Health = Config.Health
 	Prop.MaxHealth = Config.Health
 	Prop.PlayerTags = {}
-	
+
+	-- Anti-Steal Properties
+	Prop.LastHitTime = 0
+	Prop.OwnerUserId = nil
+
 	AttributeModule:SetAttribute(PropInstance, "Health", Prop.Health)
 	AttributeModule:SetAttribute(PropInstance, "MaxHealth", Prop.MaxHealth)
-	
+
 	-- Hit effect
 	local PreviousHealth = Prop.Health
-	
+
 	AttributeModule:GetAttributeChanged(PropInstance, "Health"):Connect(function()
 		local CurrentHealth = AttributeModule:GetAttribute(PropInstance, "Health")
 		if CurrentHealth < PreviousHealth then
 			Prop:RequestEffect("OnHit")
 		end
-		
+
 		PreviousHealth = CurrentHealth
 	end)
-	
+
+	-- Passive Regen / Reset Loop
+	task.spawn(function()
+		while PropInstance and PropInstance.Parent and not Prop.isDead do
+			task.wait(1)
+
+			-- Check if there is an owner and if 10 seconds have passed since last hit
+			if Prop.OwnerUserId and (os.time() - Prop.LastHitTime) >= 10 then
+				-- Reset Owner
+				Prop.OwnerUserId = nil
+
+				-- Reset Health if damaged
+				if Prop.Health < Prop.MaxHealth then
+					Prop.Health = Prop.MaxHealth
+					AttributeModule:SetAttribute(PropInstance, "Health", Prop.MaxHealth)
+
+					-- Clear damage tags so new players start fresh
+					Prop.PlayerTags = {}
+				end
+			end
+		end
+	end)
+
 	PropInstance.Parent = PropsFolder
 	Props[PropInstance] = Prop
 	return Prop
@@ -174,24 +200,24 @@ end
 function Prop:OnDied()
 	if not self.isDead then
 		self.isDead = true
-		
+
 		self:RequestEffect("OnDeath")
 		self:AwardDrops()
-		
-		task.wait(self.Config.RespawnTime or 5)
-		
-		self:Respawn()
+
+		task.delay(1, function()
+			self:Destroy() 
+		end)
 	end
 end
 
 function Prop:Destroy()
 	if not self.Destroyed then
 		self.Destroyed = true
-		
+
 		Props[self.Instance] = nil
-		
+
 		self.Instance:Destroy()
-		
+
 		setmetatable(self, nil)
 	end
 end
@@ -202,41 +228,50 @@ function Prop:TakeDamage(Damage: number)
 		if NewRequestedHealth == 0 then
 			task.spawn(self.OnDied, self)
 		end
-		
+
 		self.Health = NewRequestedHealth
 		AttributeModule:SetAttribute(self.Instance, "Health", NewRequestedHealth)
 	end
 end
 
-function Prop:Respawn()
-	if not self.Destroyed then
-		local NewProp = self._Copy
-		self:Destroy()
-		NewProp.Parent = PropsFolder
-	end
-end
-
 function Prop:AwardDrops()
 	local AlreadyGiven = {}
-	
+
 	for UserId, Damage: number in self.PlayerTags do
 		UserId = tonumber(UserId)
-		
+
 		if AlreadyGiven[UserId] then continue end
 		AlreadyGiven[UserId] = true
-		
+
 		local Player = Players:GetPlayerByUserId(UserId)
 		local Percent = Damage / self.MaxHealth
 		if not Player or Percent < 0.25 then continue end
-		
+
 		local pData = PlayerData:FindFirstChild(Player.UserId)
 
 		local Statistics = pData:FindFirstChild("Stats")
 		if not Statistics then continue end
-		
+
+		-- Update quest prop kills
+		local Quests = pData:FindFirstChild("Quests")
+		if Quests then
+			for _, Folder in Quests.Active:GetChildren() do
+				local Props = Folder:FindFirstChild("Props")
+				if not Props then
+					continue
+				end
+
+				for _, Value in Props:GetChildren() do
+					if Value.Name == self.Config.Name then
+						Value.Value += 1
+					end
+				end
+			end
+		end
+
 		---- Handle items & stats
-		
-		GiftDrops(Player, self.Config.Drops, true, true, true)
+
+		GiftDrops(Player, self.Config.Drops, true, true, true, self.Instance)
 	end
 end
 

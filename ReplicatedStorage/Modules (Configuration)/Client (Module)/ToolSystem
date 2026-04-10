@@ -32,36 +32,38 @@ local DEFAULT_VOLUME = 0.3
 --------------------------------------------------------------------------------
 
 function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
-	local Handle = Tool:WaitForChild("Handle")
-	local ItemConfig = require(Tool:WaitForChild("ItemConfig"))
-	
-	-- Character
-	local Character = Player.Character or Player.CharacterAdded:Wait()
+	-- Use timeouts to prevent infinite yielding if the tool/player is destroyed mid-load
+	local Handle = Tool:WaitForChild("Handle", 5)
+	if not Handle then return nil end 
 
-	local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
+	local ItemConfig = require(Tool:WaitForChild("ItemConfig", 5))
+
+	local Character = Player.Character or Player.CharacterAdded:Wait()
+	local Humanoid = Character:WaitForChild("Humanoid", 5) :: Humanoid
+	if not Humanoid then return nil end
+	
 	local Head = Character:WaitForChild("Head")
-	
 	local Animator = Humanoid:WaitForChild("Animator") :: Animator
-	
+
 	-- Variables
 	local WeaponSwitchingConnections = {}
-	
+
 	local Sequence = 0
-	
+
 	---- ToolSystem object ------------------------------------------------------------------------
-	
+
 	local self = setmetatable({}, ToolSystem)
 	self.Tool = Tool
 	self.Config = ItemConfig
-	
+
 	self.LastDisable = 0
 	self.LastSwing = 0
-	
+
 	self.noToolNone = noToolNone
 	self.canDisableWeaponSwitching = canDisableWeaponSwitching
-	
+
 	self.equipClock = os.clock()
-	
+
 	-- Trails
 	local Trails = {}
 
@@ -69,7 +71,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 		if ItemConfig.IgnoreTrailScript then
 			return
 		end
-		
+
 		for _, Trail in Trails do
 			local Value = if Verdict ~= nil 
 				then Verdict 
@@ -78,7 +80,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			Trail.Enabled = Value
 		end
 	end
-	
+
 	if not ItemConfig.IgnoreTrailScript then
 		for _, Trail in Tool:GetDescendants() do
 			if Trail:IsA("Trail") then
@@ -105,7 +107,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 				if LastEquippedTime < 1 and LastDisabledTime > 0 then
 					local FreezeTime = math.clamp(ItemConfig.Cooldown, 0.25, 1)
 					self.LastDisable = os.clock() + FreezeTime
-					
+
 					EventModule:Fire("PlayerUsedWeapon", FreezeTime, Tool.Name)
 				end
 			end
@@ -115,7 +117,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			LastEquippedTool = os.clock()
 		end)
 	end
-	
+
 	-- Equip/unequip connections (movement code mainly)
 	local Connections = {}
 
@@ -130,21 +132,21 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 
 	-- SFX
 	local isUsingDefaultSFX = not ItemConfig.EquipSound and true
-	
+
 	local AttackSFX = ItemConfig.ActivateSound and (typeof(ItemConfig.ActivateSound) == "table" and ItemConfig.ActivateSound or {ItemConfig.ActivateSound, DEFAULT_VOLUME})
 	local EquipSFX = ItemConfig.EquipSound and (typeof(ItemConfig.EquipSound) == "table" and ItemConfig.EquipSound or {ItemConfig.EquipSound, DEFAULT_VOLUME}) 
 		or GameConfig.DefaultEquipSound
-	
+
 	local ActivateSound = ItemConfig.ActivateSound and SFX:CreateBaseSound(
 		AttackSFX[1], 
 		{Parent = Handle, RollOffMaxDistance = 100, Volume = AttackSFX[2]}
 	)
-	
+
 	local EquipSound = SFX:CreateBaseSound(
 		EquipSFX[1], 
 		{Parent = Handle, RollOffMaxDistance = 100, Volume = EquipSFX[2]}
 	) 
-	
+
 	-- Create animations
 	local Animations = {}
 	for Name, Table in (ItemConfig.Animations or {}) do
@@ -152,7 +154,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 	end
 
 	local PlayingAnimationTracks = {}
-	
+
 	function self:PlayAnimation(AnimationName, AnimationTrack, Fade)
 		if not AnimationTrack then
 			return
@@ -181,7 +183,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 
 		local AnimationInstance = (Cycle and AnimationTable[Cycle]) 
 			or AnimationTable[math.random(#AnimationTable)]
-		
+
 		local AnimationTrack = Animator:LoadAnimation(AnimationInstance)
 		return AnimationTrack
 	end
@@ -194,7 +196,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			end
 		end
 	end
-	
+
 	-- Connections
 	function self:Activated()
 		self:StopAnimations{"Activate", "Equip", "Unequip"}
@@ -207,7 +209,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			if Sequence > #Animations.Activate then 
 				Sequence = 1 
 			end
-			
+
 			EventModule:Fire("ClientToClientCallback", Player, Tool.Name, "OnActivated", {Tool, Sequence})
 			EventModule:FireServer("ClientToServerCallback", Tool.Name, "OnActivated", {Tool, Sequence})
 		end
@@ -221,12 +223,12 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			ActivateSound:Play() 
 		end
 	end
-	
+
 	local PlayingToolNoneAnimation = nil
-	
+
 	function self:Equipped()
 		self.equipClock = os.clock()
-		
+
 		if noToolNone then
 			task.defer(function()
 				PlayingToolNoneAnimation = nil
@@ -249,7 +251,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 				PlayingToolNoneAnimation:Stop()
 			end)
 		end
-		
+
 		self:StopAnimations{"Unequip"}
 
 		local EquipAnimation = self:PickAnimation("Equip")
@@ -271,24 +273,33 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			end
 		end
 
+		local fallId = 0
 		local function OnStateChanged(OldState, NewState)
 			if NewState == Enum.HumanoidStateType.Freefall then
-				local Clock = self.equipClock 
-				
+				fallId += 1
+				local currentFall = fallId
+
+				-- Tiny grace period to prevent micro-falls (stairs, dashes, bumps) from triggering the fall animation
 				task.delay(0.25, function()
-					if Tool:IsDescendantOf(workspace) and Clock == self.equipClock then
-						self:PlayAnimation("Fall", self:PickAnimation("Fall"), 0.25)
-						self:StopAnimations({"Walk", "Idle"}, 0.0)
+					if currentFall == fallId and Humanoid:GetState() == Enum.HumanoidStateType.Freefall and Tool.Equipped then
+						CurrentMovement = "Fall"
+						self:StopAnimations({"Jump", "Walk", "Idle"}, 0.25)
+						JumpAnimation = self:PlayAnimation("Fall", self:PickAnimation("Fall"), 0.25)
 					end
 				end)
+
 			elseif NewState == Enum.HumanoidStateType.Jumping then
-				self:StopAnimations({"Walk", "Idle"}, 0.25)
+				fallId += 1 -- Cancel pending falls
+				CurrentMovement = "Jump"
+				self:StopAnimations({"Fall", "Walk", "Idle"}, 0.25)
 				JumpAnimation = self:PlayAnimation("Jump", self:PickAnimation("Jump"), 0.25)
-			elseif NewState == Enum.HumanoidStateType.Landed then
+
+			elseif NewState == Enum.HumanoidStateType.Landed or NewState == Enum.HumanoidStateType.Running or NewState == Enum.HumanoidStateType.RunningNoPhysics then
+				fallId += 1 -- Cancel pending falls
 				CurrentMovement = nil
 				JumpAnimation = nil
-				self:StopAnimations({"Fall", "Jump"}, 0.3)
-				OnMoveDirectionChanged(0.25)
+				self:StopAnimations({"Fall", "Jump"}, 0.2)
+				OnMoveDirectionChanged(0.2)
 			end
 		end
 
@@ -300,10 +311,10 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			EquipSound:Play()
 		end
 	end
-	
+
 	function self:Unequipped()
 		self:RequestUpdateTrail(false)
-		
+
 		if noToolNone then
 			task.defer(function()
 				if Character:FindFirstChildWhichIsA("Tool") and PlayingToolNoneAnimation then
@@ -323,7 +334,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			EquipSound:Stop()
 		end
 	end
-	
+
 	Tool.AncestryChanged:Connect(function(Child, Parent)
 		if Parent == nil then
 			for _, Connection in WeaponSwitchingConnections do
@@ -332,7 +343,7 @@ function ToolSystem.new(Tool, canDisableWeaponSwitching, noToolNone)
 			self:RequestDisconnectAll(Connections)
 		end
 	end)
-	
+
 	return self
 end
 

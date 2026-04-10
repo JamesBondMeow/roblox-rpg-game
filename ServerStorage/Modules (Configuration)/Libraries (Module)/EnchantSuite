@@ -1,0 +1,555 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local RbxUtility = require(ReplicatedStorage.Modules.Shared.RbxUtility)
+
+local EnchantSuite = {}
+local CurrentlyAffected = {}
+
+--------------------------------------------------------------------------------
+-- Utilities
+
+local function AddParticlesToCharacter(Character, TotalTime, Folder)
+	local Limbs = {"Left Leg", "Left Arm", "Right Arm", "Right Leg", "Torso", "Head"}
+	for _, Limb in Limbs do
+		local LimbPart = Character:FindFirstChild(Limb)
+		if not LimbPart then
+			continue
+		end
+
+		for _, Particle in Folder:GetChildren() do
+			local Clone = Particle:Clone()
+			Clone.Parent = LimbPart
+			Clone.Enabled = true
+			task.delay(TotalTime, function()
+				Clone.Enabled = false
+			end)
+
+			Debris:AddItem(Clone, TotalTime + 2)
+		end
+	end
+end
+
+local function ChangeCharacter(Character, Callback)
+	local Tool = Character:FindFirstChildWhichIsA("Tool")
+	for _, Object: Part in Character:GetDescendants() do
+		if Tool and Object:IsDescendantOf(Tool) then
+			continue
+		end
+
+		if Object:IsA("SpecialMesh") then
+			Object.TextureId = ""
+		elseif Object:IsA("BasePart") then
+			if Object:IsA("MeshPart") then
+				Object.TextureID = ""
+			end
+			task.spawn(Callback, Object)
+		elseif Object:IsA("Decal") then
+			Object.Transparency = 1
+		end
+	end
+end
+
+local function CreateFloatingText(text, color, instance)
+	if not instance then return end
+	local pivot = instance:GetPivot()
+
+	local part = Instance.new("Part")
+	part.Anchored = true
+	part.CanCollide = false
+	part.Transparency = 1
+	part.CFrame = pivot
+	part.Parent = workspace:FindFirstChild("Fx") or workspace
+
+	local bg = Instance.new("BillboardGui")
+	bg.Size = UDim2.fromOffset(150, 50)
+	bg.StudsOffset = Vector3.new(0, 3, 0)
+	bg.AlwaysOnTop = true
+	bg.Parent = part
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color
+	label.TextScaled = true
+	label.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+	label.Parent = bg
+
+	local uiStroke = Instance.new("UIStroke")
+	uiStroke.Thickness = 2
+	uiStroke.Parent = label
+
+	local endCFrame = part.CFrame * CFrame.new(0, 5, 0)
+	local tweenInfo = TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local tween = TweenService:Create(part, tweenInfo, {CFrame = endCFrame})
+
+	TweenService:Create(label, tweenInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(uiStroke, tweenInfo, {Transparency = 1}):Play()
+
+	tween:Play()
+	Debris:AddItem(part, 1.5)
+end
+
+local function TrackExtraDamage(Player, Mob, Damage)
+	if not Mob or not Mob.Instance or not Player then return end
+
+	local UserId = tonumber((string.gsub(tostring(Player.UserId), "-", "")))
+
+	local PlayerTags = Mob.Instance:FindFirstChild("PlayerTags")
+	if not PlayerTags then
+		PlayerTags = Instance.new("Configuration")
+		PlayerTags.Name = "PlayerTags"
+		PlayerTags.Parent = Mob.Instance
+	end
+
+	-- Write securely to the Attributes so MobLib can read it
+	local existing = PlayerTags:GetAttribute(UserId) or 0
+	PlayerTags:SetAttribute(UserId, existing + Damage)
+end
+
+--------------------------------------------------------------------------------
+-- Routing
+
+function EnchantSuite:OnHit(Player, Mob, InitialDamage, EnchantId)
+	local enchantConfig = nil
+
+	-- Safe ID search
+	if ContentLibrary.Material[EnchantId] then
+		enchantConfig = ContentLibrary.Material[EnchantId]
+	else
+		for _, matData in pairs(ContentLibrary.Material) do
+			if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == EnchantId then
+				enchantConfig = matData
+				break
+			end
+		end
+	end
+
+	if not enchantConfig or not enchantConfig.Config.EnchantmentData then return end
+
+	local eData = enchantConfig.Config.EnchantmentData
+	local props = eData.Properties
+
+	-- Route using the Family name (e.g., "Flame") so we don't need Flame_1, Flame_2 functions
+	local family = eData.Family or string.split(EnchantId, "_")[1]
+
+	if self[family] then
+		self[family](self, Player, Mob, InitialDamage, props)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Enchantment Callbacks
+
+function EnchantSuite:Flame(Player, Mob, InitialDamage, Properties)
+	-- Prevent stacking infinite fire loops on the same mob
+	CurrentlyAffected[Mob.Instance] = CurrentlyAffected[Mob.Instance] or {}
+	if CurrentlyAffected[Mob.Instance]["Flame"] then return end
+	CurrentlyAffected[Mob.Instance]["Flame"] = true
+
+	local ticks = Properties.Ticks or 3
+	local burn = Properties.BurnDamage or 5
+	local tickDamage = burn
+
+	-- Visuals: Change Character Color & Material
+	local Defaults = {}
+	ChangeCharacter(Mob.Instance, function(Object)
+		Defaults[Object] = {
+			Color = Object.Color,
+			Material = Object.Material
+		}
+		Object.Color = Color3.fromRGB(255, 85, 0)
+		Object.Material = Enum.Material.Neon
+	end)
+
+	-- Coat the mob's limbs in fire
+	AddParticlesToCharacter(Mob.Instance, ticks, ReplicatedStorage.Assets.Effects.Burn)
+
+	task.spawn(function()
+		for i = 1, ticks do
+			task.wait(1)
+			if Mob and not Mob.isDead then
+				-- Track Flame Damage
+				TrackExtraDamage(Player, Mob, tickDamage)
+				Mob:TakeDamage(tickDamage)
+			end
+		end
+
+		if Mob and Mob.Instance then
+			ChangeCharacter(Mob.Instance, function(Object)
+				if Defaults[Object] then
+					Object.Color = Defaults[Object].Color
+					Object.Material = Defaults[Object].Material
+				end
+			end)
+		end
+		if CurrentlyAffected[Mob.Instance] then CurrentlyAffected[Mob.Instance]["Flame"] = nil end
+	end)
+end
+
+function EnchantSuite:Venom(Player, Mob, InitialDamage, Properties)
+	CurrentlyAffected[Mob.Instance] = CurrentlyAffected[Mob.Instance] or {}
+	if CurrentlyAffected[Mob.Instance]["Venom"] then return end
+	CurrentlyAffected[Mob.Instance]["Venom"] = true
+
+	local ticks = Properties.Ticks or 3
+	local pct = Properties.PoisonDamagePercent or 0.03
+	local tickDamage = math.max(1, math.round(InitialDamage * pct))
+
+	local Defaults = {}
+	ChangeCharacter(Mob.Instance, function(Object)
+		Defaults[Object] = { Color = Object.Color, Material = Object.Material }
+		Object.Color = Color3.fromRGB(120, 255, 100) -- Toxic Green
+		Object.Material = Enum.Material.Neon
+	end)
+	
+	-- Coat the mob's limbs in venom
+	AddParticlesToCharacter(Mob.Instance, ticks, ReplicatedStorage.Assets.Effects.Venom)
+
+	task.spawn(function()
+		for i = 1, ticks do
+			task.wait(1)
+			if Mob and not Mob.isDead then
+				-- Track Venom Damage
+				TrackExtraDamage(Player, Mob, tickDamage)
+				Mob:TakeDamage(tickDamage)
+			end
+		end
+
+		if Mob and Mob.Instance then
+			ChangeCharacter(Mob.Instance, function(Object)
+				if Defaults[Object] then
+					Object.Color = Defaults[Object].Color
+					Object.Material = Defaults[Object].Material
+				end
+			end)
+		end
+		if CurrentlyAffected[Mob.Instance] then CurrentlyAffected[Mob.Instance]["Venom"] = nil end
+	end)
+end
+
+function EnchantSuite:Frostbite(Player, Mob, InitialDamage, Properties)
+	local Hum = Mob.Instance:FindFirstChildWhichIsA("Humanoid")
+	if not Hum or Hum:GetAttribute("IsFrostbitten") then return end
+	Hum:SetAttribute("IsFrostbitten", true)
+
+	local duration = Properties.Duration or 2
+	local slowPct = Properties.SlowPercent or 0.15
+	local originalSpeed = Hum.WalkSpeed
+
+	-- Apply Slow
+	Hum.WalkSpeed = originalSpeed * (1 - slowPct)
+
+	local Defaults = {}
+	ChangeCharacter(Mob.Instance, function(Object)
+		Defaults[Object] = { Color = Object.Color, Material = Object.Material }
+		Object.Color = Color3.fromRGB(150, 220, 255) -- Ice Blue
+		Object.Material = Enum.Material.Glass
+	end)
+	
+	-- Coat the mob's limbs in frostbite
+	AddParticlesToCharacter(Mob.Instance, duration, ReplicatedStorage.Assets.Effects.Freeze)
+
+	task.spawn(function()
+		task.wait(duration)
+		if Mob and Mob.Instance and Hum then
+			Hum.WalkSpeed = originalSpeed
+			ChangeCharacter(Mob.Instance, function(Object)
+				if Defaults[Object] then
+					Object.Color = Defaults[Object].Color
+					Object.Material = Defaults[Object].Material
+				end
+			end)
+			Hum:SetAttribute("IsFrostbitten", nil)
+		end
+	end)
+end
+
+function EnchantSuite:Lifesteal(Player, Mob, InitialDamage, Properties)
+	local lifestealPct = Properties.HealPercent or 0.15
+	local healAmount = math.max(1, math.round(InitialDamage * lifestealPct))
+
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChildWhichIsA("Humanoid")
+
+	if Humanoid and Humanoid.Health > 0 and Humanoid.Health < Humanoid.MaxHealth then
+		Humanoid.Health = math.min(Humanoid.MaxHealth, Humanoid.Health + healAmount)
+
+		-- Spawn Floating Text over the Mob
+		CreateFloatingText("✦ Lifesteal", Color3.fromRGB(255, 100, 100), Mob.Instance)
+
+		-- Spawn a quick green healing particle on the player's torso
+		local healFx = ReplicatedStorage.Assets.Effects.Heal
+		if healFx then
+			AddParticlesToCharacter(Character, 1, healFx)
+		end
+	end
+end
+
+function EnchantSuite:Cleave(Player, Mob, InitialDamage, Properties)
+	-- Prevent recursive cleaving (cleave triggering cleave)
+	if Mob.Instance:GetAttribute("JustCleaved") then return end
+
+	local radius = Properties.Radius or 12
+	local cleavePct = Properties.CleavePercent or 0.20
+	local cleaveDmg = math.max(1, math.round(InitialDamage * cleavePct))
+
+	local root = Mob.Instance:FindFirstChild("HumanoidRootPart") or Mob.Instance.PrimaryPart
+	if not root then return end
+
+	-- Find nearby mobs using OverlapParams
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Include
+
+	local mobFolders = {}
+	for _, tagged in ipairs(CollectionService:GetTagged("Mob")) do
+		table.insert(mobFolders, tagged)
+	end
+	overlapParams.FilterDescendantsInstances = mobFolders
+
+	local hitParts = workspace:GetPartBoundsInRadius(root.Position, radius, overlapParams)
+	local processedMobs = { [Mob.Instance] = true } -- Ignore the main target
+
+	-- Grab the tool and its enchantments to apply to secondary targets
+	local Tool = Player.Character and Player.Character:FindFirstChildWhichIsA("Tool")
+	local enchantAttr = Tool and Tool:GetAttribute("Enchantments")
+	local enchants = (enchantAttr and enchantAttr ~= "") and string.split(enchantAttr, ",") or {}
+
+	for _, part in ipairs(hitParts) do
+		local nearbyMobInstance = part:FindFirstAncestorWhichIsA("Model")
+
+		if nearbyMobInstance and not processedMobs[nearbyMobInstance] and CollectionService:HasTag(nearbyMobInstance, "Mob") then
+			processedMobs[nearbyMobInstance] = true
+
+			local nearbyHum = nearbyMobInstance:FindFirstChildWhichIsA("Humanoid")
+			if nearbyHum and nearbyHum.Health > 0 then
+				-- Flag them so they don't recursively cleave back
+				nearbyMobInstance:SetAttribute("JustCleaved", true)
+
+				-- Apply raw AoE damage
+				nearbyHum:TakeDamage(cleaveDmg)
+
+				-- Visual Effects for Cleave
+				local cleaveFx = ReplicatedStorage.Assets.Effects.Slash
+				if cleaveFx then
+					AddParticlesToCharacter(nearbyMobInstance, 1, cleaveFx)
+				else
+					-- Generic flash fallback if you don't have a "Cleave" particles folder
+					local highlight = Instance.new("Highlight")
+					highlight.FillColor = Color3.fromRGB(255, 255, 255)
+					highlight.FillTransparency = 0.5
+					highlight.OutlineTransparency = 1
+					highlight.Parent = nearbyMobInstance
+					Debris:AddItem(highlight, 0.2)
+				end
+
+				-- Construct a pseudo-mob to pass safely into the other enchantment functions
+				local pseudoMob = {
+					Instance = nearbyMobInstance,
+					isDead = (nearbyHum.Health <= 0),
+					TakeDamage = function(self, dmg)
+						if nearbyHum.Health > 0 then nearbyHum:TakeDamage(dmg) end
+					end
+				}
+
+				-- Apply the 2nd Enchantment (e.g. Venom, Flame, Lifesteal) to the cleaved mob
+				for _, enchantId in ipairs(enchants) do
+					-- Exclude Cleave so it doesn't loop! (Stat enchants naturally ignore OnHit)
+					if not string.find(enchantId, "Cleave") then
+						self:OnHit(Player, pseudoMob, cleaveDmg, enchantId)
+					end
+				end
+
+				-- Unflag them quickly so they can be cleaved again on the next swing
+				task.delay(0.1, function()
+					if nearbyMobInstance then nearbyMobInstance:SetAttribute("JustCleaved", nil) end
+				end)
+			end
+		end
+	end
+end
+
+function EnchantSuite:Eclipse(Player, Mob, InitialDamage, Properties)
+	local trackingId = "EclipseHits_" .. Player.UserId
+	local hits = Mob.Instance:GetAttribute(trackingId) or 0
+	hits += 1
+
+	if hits >= (Properties.Hits or 5) then
+		hits = 0
+		local pct = Properties.HealthPercent or 0.05
+		local maxHealth = Mob.Instance:FindFirstChild("Enemy") and Mob.Instance.Enemy.MaxHealth or 0
+		local trueDamage = math.max(1, math.round(maxHealth * pct))
+
+		if trueDamage > 0 then
+			-- Track Eclipse Damage
+			TrackExtraDamage(Player, Mob, trueDamage)
+			Mob.Instance.Enemy:TakeDamage(trueDamage)
+			CreateFloatingText("✦ Eclipse", Color3.fromRGB(150, 0, 200), Mob.Instance)
+		end
+	end
+	Mob.Instance:SetAttribute(trackingId, hits)
+end
+
+function EnchantSuite:Guillotine(Player, Mob, InitialDamage, Properties)
+	if Mob.Instance:GetAttribute("GuillotineMark") then return end
+	local chance = Properties.Chance or 0.05
+
+	-- Apply Omniscience
+	local Tool = Player.Character and Player.Character:FindFirstChildWhichIsA("Tool")
+	if Tool and Tool:GetAttribute("Enchantments") and string.find(Tool:GetAttribute("Enchantments"), "Omniscience") then
+		chance *= 1.5
+	end
+
+	if Random.new():NextNumber() <= chance then
+		Mob.Instance:SetAttribute("GuillotineMark", true)
+		Mob.Instance:SetAttribute("GuillotineDamage", 0)
+
+		CreateFloatingText("✦ Deathmark", Color3.fromRGB(255, 0, 0), Mob.Instance)
+
+		local duration = Properties.Duration or 3
+
+		AddParticlesToCharacter(Mob.Instance, duration, ReplicatedStorage.Assets.Effects.Mark)
+
+		task.delay(duration, function()
+			if Mob and Mob.Instance and Mob.Instance:FindFirstChild("Enemy") then
+				Mob.Instance:SetAttribute("GuillotineMark", nil)
+
+				local storedDamage = Mob.Instance:GetAttribute("GuillotineDamage") or 0
+				local detonateDamage = math.round(storedDamage * (Properties.Multiplier or 2))
+
+				if detonateDamage > 0 then
+					-- Track Guillotine Detonation Damage
+					TrackExtraDamage(Player, Mob, detonateDamage)
+					Mob.Instance.Enemy:TakeDamage(detonateDamage)
+					CreateFloatingText("✦ Detonated", Color3.fromRGB(255, 0, 0), Mob.Instance)
+					AddParticlesToCharacter(Mob.Instance, 0.5, ReplicatedStorage.Assets.Effects.Detonated)
+				end
+			end
+		end)
+	end
+end
+
+function EnchantSuite:Echo(Player, Mob, InitialDamage, Properties)
+	if Mob.Instance:GetAttribute("EchoHit") then return end
+	local pct = Properties.DamagePercent or 0.50
+	local echoDmg = math.max(1, math.round(InitialDamage * pct))
+
+	local Tool = Player.Character and Player.Character:FindFirstChildWhichIsA("Tool")
+	local enchants = {}
+	if Tool and Tool:GetAttribute("Enchantments") then
+		enchants = string.split(Tool:GetAttribute("Enchantments"), ",")
+	end
+
+	local Char = Player.Character
+	local charPivot = Char and Char:GetPivot()
+
+	local fixedAnim = Instance.new("Animation")
+	fixedAnim.AnimationId = Properties.AnimationId or "rbxassetid://123856371040161" 
+
+	task.delay(0.3, function()
+		if Mob and not Mob.isDead then
+			Mob.Instance:SetAttribute("EchoHit", true)
+
+			-- Spawn the Phantom Clone
+			if Char then
+				Char.Archivable = true
+				local Clone = Char:Clone()
+				Char.Archivable = false
+
+				-- Anchor the Root Part to hold it in place
+				local HRP = Clone:FindFirstChild("HumanoidRootPart")
+				if HRP then HRP.Anchored = true end
+
+				-- Ghostify the clone
+				for _, child in ipairs(Clone:GetDescendants()) do
+					if child:IsA("Script") or child:IsA("LocalScript") or child:IsA("GuiObject") then
+						child:Destroy()
+					elseif child:IsA("BasePart") then
+						child.Transparency = 0.6
+						child.Color = Color3.fromRGB(150, 200, 255)
+						child.Material = Enum.Material.ForceField
+						child.CanCollide = false
+						if child.Name ~= "HumanoidRootPart" then
+							child.Anchored = false -- Let Motor6Ds animate
+						end
+					elseif child:IsA("Decal") then
+						child.Transparency = 0.6
+					end
+				end
+
+				Clone:PivotTo(charPivot or Char:GetPivot())
+				Clone.Parent = workspace:FindFirstChild("Fx") or workspace
+
+				-- Load and play the fixed animation on the clone
+				local cloneAnimator = Clone:FindFirstChild("Humanoid") and Clone.Humanoid:FindFirstChild("Animator")
+				if cloneAnimator and fixedAnim.AnimationId ~= "rbxassetid://0000000000" then
+					local newTrack = cloneAnimator:LoadAnimation(fixedAnim)
+					newTrack:Play()
+				end
+
+				Debris:AddItem(Clone, 0.75)
+			end
+
+			-- Track Echo Damage
+			TrackExtraDamage(Player, Mob, echoDmg)
+			Mob.Instance.Enemy:TakeDamage(echoDmg)
+			CreateFloatingText("✦ Echo", Color3.fromRGB(150, 200, 255), Mob.Instance)
+
+			local pseudoMob = {
+				Instance = Mob.Instance,
+				isDead = (Mob.Instance.Enemy.Health <= 0),
+				TakeDamage = function(self, dmg)
+					if Mob.Instance.Enemy.Health > 0 then Mob.Instance.Enemy:TakeDamage(dmg) end
+				end
+			}
+
+			for _, enchantId in ipairs(enchants) do
+				if not string.find(enchantId, "Echo") then
+					self:OnHit(Player, pseudoMob, echoDmg, enchantId)
+				end
+			end
+
+			task.wait(0.1)
+			if Mob.Instance then Mob.Instance:SetAttribute("EchoHit", nil) end
+		end
+	end)
+end
+
+function EnchantSuite:Bloodlust(Player, Mob, InitialDamage, Properties)
+	local Hum = Mob.Instance:FindFirstChild("Enemy")
+	-- Only proc if the mob was killed on this exact hit
+	if Hum and Hum.Health <= 0 and not Hum:GetAttribute("BloodlustProc") then
+		Hum:SetAttribute("BloodlustProc", true)
+
+		local Char = Player.Character
+		local pHum = Char:FindFirstChild("Humanoid")
+
+		if pHum and not Char:GetAttribute("BloodlustActive") then
+			Char:SetAttribute("BloodlustActive", true)
+
+			local speedBoost = Properties.SpeedBoost or 0.30
+
+			-- Apply Boost via Player's Attribute Config
+			local Attributes = pHum:FindFirstChild("Attributes")
+			local WalkSpeedConfig = Attributes and Attributes:FindFirstChild("WalkSpeed")
+			if WalkSpeedConfig then
+				local baseSpeed = WalkSpeedConfig:GetAttribute("Default") or 20
+				WalkSpeedConfig:SetAttribute("Bloodlust", math.round(baseSpeed * speedBoost))
+			end
+
+			AddParticlesToCharacter(Char, Properties.Duration, ReplicatedStorage.Assets.Effects.Enrage)
+			CreateFloatingText("✦ Bloodlust", Color3.fromRGB(255, 0, 0), Char)
+
+			task.delay(Properties.Duration or 4, function()
+				if WalkSpeedConfig then WalkSpeedConfig:SetAttribute("Bloodlust", nil) end
+				if Char then Char:SetAttribute("BloodlustActive", nil) end
+			end)
+		end
+	end
+end
+
+return EnchantSuite

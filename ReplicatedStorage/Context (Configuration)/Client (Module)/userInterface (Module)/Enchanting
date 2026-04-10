@@ -1,0 +1,789 @@
+--[[
+	Enchanting UI (Client)
+	
+	Handles the Unveiling, Enchanting, and Cleansing menus.
+]]
+
+--> Services
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+--> Player
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local pData = ReplicatedStorage:WaitForChild("PlayerData"):WaitForChild(Player.UserId)
+local ItemsFolder = pData:WaitForChild("Items")
+local StatsFolder = pData:WaitForChild("Stats")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
+local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
+local SFX = require(ReplicatedStorage.Modules.Shared.SFX)
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+local ColorModule = require(ReplicatedStorage.Modules.Shared.Color)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+
+local SetTooltipListener = require(ReplicatedStorage.Modules.Client.setTooltipListener)
+local CreateNotification = require(ReplicatedStorage.Modules.Client.createNotification)
+local SetCanvasGroupVisibility = require(ReplicatedStorage.Modules.Client.setCanvasGroupVisibility)
+
+local GameConfig = require(ReplicatedStorage.GameConfig)
+local NPCFunctions = require(ReplicatedStorage.Modules.Client.NPCFunctions)
+
+--------------------------------------------------------------------------------
+
+return function(Gui)
+	--> References
+	local UnveilingFrame = Gui:WaitForChild("UnveilingFrame")
+	local EnchantingFrame = Gui:WaitForChild("EnchantingFrame")
+	local CleansingFrame = Gui:WaitForChild("CleansingFrame")
+
+	local Template = script:WaitForChild("SlotTemplate")
+	local EnchantTemplate = script:WaitForChild("EnchantTemplate")
+
+	--> Variables
+	local CurrentTab = "Unveiling"
+	local isOpen = false
+
+	-- Unveiling State
+	local SelectedVeiledTome = nil
+
+	-- Enchanting State
+	local SelectedE_Item = nil
+	local SelectedE_Tome = nil
+
+	-- Cleansing State
+	local SelectedC_Item = nil
+	local SelectedC_Enchant = nil
+
+	--------------------------------------------------------------------------------
+	-- Helper Functions
+
+	local function ParseCompoundName(compoundName)
+		local split = string.split(tostring(compoundName), "|")
+		local baseName = split[1]
+		local enchants = {}
+		for i = 2, #split do table.insert(enchants, split[i]) end
+		return baseName, enchants
+	end
+
+	local function GetItemConfig(category, baseName)
+		return ContentLibrary[category] and ContentLibrary[category][baseName] and ContentLibrary[category][baseName].Config
+	end
+	
+	local function GetEnchantConfigById(enchantId)
+		local directConfig = GetItemConfig("Material", enchantId)
+		if directConfig then return directConfig end
+
+		local materials = ContentLibrary["Material"]
+		if materials then
+			for name, data in pairs(materials) do
+				if data.Config and data.Config.EnchantmentData and data.Config.EnchantmentData.Id == enchantId then
+					return data.Config
+				end
+			end
+		end
+		return nil
+	end
+
+	local function ClearList(listFrame)
+		for _, child in ipairs(listFrame:GetChildren()) do
+			if child:IsA("GuiObject") and child.Name ~= "UIListLayout" and child.Name ~= "UIGridLayout" then
+				child:Destroy()
+			end
+		end
+	end
+
+	local function ApplySlotVisuals(slot, itemName, iconId)
+		slot.Name = itemName
+		slot.ItemName.Text = itemName
+
+		if iconId then
+			slot.ItemName.Visible = true
+			slot.ItemIcon.Visible = true
+			slot.ItemIcon.Label.Image = tonumber(iconId) and `rbxassetid://{iconId}` or iconId
+		else
+			slot.ItemName.Visible = true
+			slot.ItemIcon.Visible = false
+		end
+	end
+	
+	local function ApplyTooltipToSlot(SlotFrame, category, compoundName)
+		local baseName, enchants = ParseCompoundName(compoundName)
+		local Item = ContentLibrary[category] and ContentLibrary[category][baseName]
+		if not Item or not Item.Instance then return end
+
+		-- Clone the instance and apply enchantments so the tooltip reads them accurately
+		local MockInstance = Item.Instance:Clone()
+		if #enchants > 0 then
+			MockInstance:SetAttribute("Enchantments", table.concat(enchants, ","))
+		end
+
+		local CategoryInfo = GameConfig.Categories[category]
+		local Primary, Secondary
+		if CategoryInfo then
+			Primary, Secondary = ColorModule:ConvertToHSV3(CategoryInfo.Color)
+		end
+
+		-- SpecialColor override (e.g., for seasonal/rare items)
+		if Item.Config and Item.Config.SpecialColor then
+			Primary, _, Secondary = ColorModule:ConvertToHSV3(Item.Config.SpecialColor)
+		end
+
+		SetTooltipListener(SlotFrame, MockInstance, Primary, Secondary)
+	end
+
+	--------------------------------------------------------------------------------
+	-- Unveiling Logic
+
+	local function UpdateUnveilingUI()
+		local Content = UnveilingFrame.Content
+		local PreviewIcon = Content.UnveilPreview.Icon
+		local EnchantmentList = Content.SelectedTome.EnchantmentList
+		local TomeName = Content.SelectedTome.TomeName.NameText
+		local CostText = Content.UnveilCost.Cost.GoldCost
+
+		ClearList(EnchantmentList)
+
+		if SelectedVeiledTome then
+			local baseName = ParseCompoundName(SelectedVeiledTome)
+			local config = GetItemConfig("Material", baseName)
+
+			-- Directly update the ImageLabel in the preview
+			if config.IconId then
+				PreviewIcon.Image = tonumber(config.IconId) and `rbxassetid://{config.IconId}` or config.IconId
+				PreviewIcon.Visible = true
+			else
+				PreviewIcon.Visible = false
+			end
+
+			-- Populate possible enchantments
+			if config.AvailableEnchantments then
+				for _, enchantId in ipairs(config.AvailableEnchantments) do
+					local eConfig = GetEnchantConfigById(enchantId)
+					if eConfig and eConfig.EnchantmentData then
+						local lbl = EnchantTemplate:Clone()
+						lbl.Text = "✦ " .. eConfig.EnchantmentData.DisplayName
+						lbl.TextColor3 = eConfig.SpecialColor or Color3.new(1,1,1)
+						lbl.Parent = EnchantmentList
+						lbl.Visible = true
+					end
+				end
+			end
+
+			CostText.Text = config.UnveilCost and `{FormatNumber(config.UnveilCost, "Commas")} Gold` or "???"
+			TomeName.Text = baseName
+		else
+			PreviewIcon.Visible = false
+			CostText.Text = "???"
+			TomeName.Text = "Select a Veiled Tome"
+		end
+	end
+
+	local function RefreshUnveilingList()
+		local List = UnveilingFrame.Content.TomeInventoryList
+		ClearList(List)
+
+		local materials = ItemsFolder:FindFirstChild("Material")
+		if not materials then return end
+
+		for _, itemValue in ipairs(materials:GetChildren()) do
+			local baseName = ParseCompoundName(itemValue.Name)
+			local config = GetItemConfig("Material", baseName)
+
+			-- Only show Veiled Tomes (Has AvailableEnchantments)
+			if config and config.MaterialType == "Enchantment" and config.AvailableEnchantments then
+				local slot = Template:Clone()
+				ApplySlotVisuals(slot, baseName, config.IconId)
+				slot.Amount.Text = `x{itemValue.Value}`
+				slot.Amount.Visible = itemValue.Value > 1
+				
+				-- Selection Logic
+				if SelectedVeiledTome == itemValue.Name then
+					slot.UIStroke.Color = Color3.fromRGB(0, 255, 0) -- Highlight
+					slot.UIStroke.Thickness = 2
+				else
+					slot.UIStroke.Color = Color3.fromRGB(60, 60, 60)
+					slot.UIStroke.Thickness = 2
+				end
+				
+				ApplyTooltipToSlot(slot, "Material", itemValue.Name)
+
+				slot.Button.Activated:Connect(function()
+					SelectedVeiledTome = itemValue.Name
+					RefreshUnveilingList()
+					UpdateUnveilingUI()
+				end)
+
+				slot.Parent = List
+				slot.Visible = true
+			end
+		end
+	end
+
+	--------------------------------------------------------------------------------
+	-- Enchanting Logic
+
+	local function UpdateEnchantingUI()
+		local Content = EnchantingFrame.Content
+		local ItemIcon = Content.ItemPreview.Icon
+		local ItemNameText = Content.ItemPreview.ItemName.NameText
+		local AppliedEnchantsText = Content.ItemPreview.AppliedEnchants
+
+		local TomeIcon = Content.TomePreview.Icon
+		local TomeNameText = Content.TomePreview.TomeName.NameText
+		local TomeDescriptionText = Content.TomePreview.TomeDescription
+
+		if SelectedE_Item then
+			local baseName, enchants = ParseCompoundName(SelectedE_Item.Name)
+			local config = GetItemConfig(SelectedE_Item.Category, baseName)
+
+			if config.IconId then
+				ItemIcon.Image = tonumber(config.IconId) and `rbxassetid://{config.IconId}` or config.IconId
+				ItemIcon.Visible = true
+			else
+				ItemIcon.Visible = false
+			end
+			ItemNameText.Text = baseName
+
+			-- Check for an applied enchantment
+			if enchants[1] then
+				local eConfig = GetEnchantConfigById(enchants[1])
+				if eConfig and eConfig.EnchantmentData then
+					AppliedEnchantsText.Text = `Applied: ✦ {eConfig.EnchantmentData.DisplayName}`
+					AppliedEnchantsText.TextColor3 = eConfig.SpecialColor or Color3.new(1, 1, 1)
+					AppliedEnchantsText.Visible = true
+				else
+					AppliedEnchantsText.Visible = false
+				end
+			else
+				AppliedEnchantsText.Visible = false
+			end
+		else
+			ItemIcon.Visible = false
+			ItemNameText.Text = "Select an Item"
+			AppliedEnchantsText.Visible = false
+		end
+
+		if SelectedE_Tome then
+			local baseName = ParseCompoundName(SelectedE_Tome)
+			local config = GetItemConfig("Material", baseName)
+
+			if config.IconId then
+				TomeIcon.Image = tonumber(config.IconId) and `rbxassetid://{config.IconId}` or config.IconId
+				TomeIcon.Visible = true
+			else
+				TomeIcon.Visible = false
+			end
+			TomeNameText.Text = baseName
+			TomeDescriptionText.Visible = true
+
+			-- Show the description of the enchantment
+			TomeDescriptionText.Text = config.Tip or "???"
+		else
+			TomeIcon.Visible = false
+			TomeNameText.Text = "Select an Enchantment"
+			TomeDescriptionText.Visible = false
+		end
+		
+		-- ValidOn Validation Logic
+		local EnchantBtn = Content.EnchantFrame.Enchant
+		if EnchantBtn then
+
+			if SelectedE_Item and SelectedE_Tome then
+				local itemBaseName, enchants = ParseCompoundName(SelectedE_Item.Name)
+				local itemConfig = GetItemConfig(SelectedE_Item.Category, itemBaseName)
+
+				local tomeBaseName = ParseCompoundName(SelectedE_Tome)
+				local tomeConfig = GetItemConfig("Material", tomeBaseName)
+
+				local isValid = false
+				local eData = tomeConfig and tomeConfig.EnchantmentData
+
+				-- Curse & Same Family Restriction Logic
+				local isCurse = tomeConfig.Curse == true
+				local hasExistingCurse = false
+				local hasSameFamily = false
+				local tomeFamily = (eData and eData.Family) or string.split(tomeBaseName, "_")[1]
+
+				for _, enchantId in ipairs(enchants) do
+					local existingConfig = GetItemConfig("Material", enchantId)
+
+					-- Fallback search if the material name doesn't perfectly match the ID
+					if not existingConfig then
+						for _, matData in pairs(ContentLibrary.Material) do
+							if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+								existingConfig = matData.Config
+								break
+							end
+						end
+					end
+
+					if existingConfig then
+						if isCurse and existingConfig.Curse then
+							hasExistingCurse = true
+						end
+
+						local existingFamily = (existingConfig.EnchantmentData and existingConfig.EnchantmentData.Family) or string.split(enchantId, "_")[1]
+						if existingFamily == tomeFamily then
+							hasSameFamily = true
+						end
+					end
+				end
+
+				if hasExistingCurse then
+					isValid = false
+					EnchantBtn.BackgroundColor3 = Color3.fromRGB(255, 83, 83) -- Red
+					EnchantBtn.AutoButtonColor = false
+					EnchantBtn.TextLabel.Text = "Item Already Cursed"
+				elseif hasSameFamily then
+					isValid = false
+					EnchantBtn.BackgroundColor3 = Color3.fromRGB(255, 83, 83) -- Red
+					EnchantBtn.AutoButtonColor = false
+					EnchantBtn.TextLabel.Text = "Enchantment Already Applied"
+				elseif eData and eData.ValidOn then
+					-- Define specificity layers
+					local specificTags = {"Sword", "Pickaxe", "Sickle", "Helmet", "Pauldron", "Chestplate"}
+					local categoryTags = {"Melee", "Magic", "Armor"}
+
+					local hasSpecific, hasCategory = false, false
+					for _, v in ipairs(eData.ValidOn) do
+						if table.find(specificTags, v) then hasSpecific = true end
+						if table.find(categoryTags, v) then hasCategory = true end
+					end
+
+					-- Identify the item's layers
+					local itemSpecific = itemConfig.ToolType or (itemConfig.Type == "Tool" and itemConfig.WeaponType == "Melee" and "Sword") or itemConfig.ArmorType
+					local itemCat = itemConfig.WeaponType or itemConfig.Type
+					local itemBase = itemConfig.Type
+
+					-- Check the MOST SPECIFIC tag requirement first
+					if hasSpecific then
+						isValid = (itemSpecific ~= nil) and table.find(eData.ValidOn, itemSpecific) ~= nil
+					elseif hasCategory then
+						isValid = (itemCat ~= nil) and table.find(eData.ValidOn, itemCat) ~= nil
+					else
+						isValid = (itemBase ~= nil) and table.find(eData.ValidOn, itemBase) ~= nil
+					end
+
+					-- Update Button UI
+					if isValid then
+						EnchantBtn.BackgroundColor3 = Color3.fromRGB(85, 255, 127) -- Green
+						EnchantBtn.AutoButtonColor = true
+						EnchantBtn.TextLabel.Text = "Enchant"
+					else
+						EnchantBtn.BackgroundColor3 = Color3.fromRGB(255, 83, 83) -- Red
+						EnchantBtn.AutoButtonColor = false
+						EnchantBtn.TextLabel.Text = "Invalid Item Type"
+					end
+				else
+					-- If no ValidOn array exists, assume it can go on anything
+					isValid = true 
+					EnchantBtn.BackgroundColor3 = Color3.fromRGB(85, 255, 127) -- Green
+					EnchantBtn.AutoButtonColor = true
+					EnchantBtn.TextLabel.Text = "Enchant"
+				end
+			else
+				EnchantBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100) -- Gray
+				EnchantBtn.AutoButtonColor = false
+				EnchantBtn.TextLabel.Text = "Enchant"
+			end
+		end
+	end
+
+	local function RefreshEnchantingLists()
+		local InvList = EnchantingFrame.Content.ItemInventoryList
+		local TomesList = EnchantingFrame.Content.TomeInventoryList
+
+		ClearList(InvList)
+		ClearList(TomesList)
+
+		-- Populate valid items
+		for _, category in ipairs({"Tool", "Armor"}) do
+			local folder = ItemsFolder:FindFirstChild(category)
+			if not folder then continue end
+
+			for _, itemValue in ipairs(folder:GetChildren()) do
+				local baseName, enchants = ParseCompoundName(itemValue.Name)
+				local config = GetItemConfig(category, baseName)
+
+				-- Hide items with 2 enchants
+				if config and #enchants < 2 then
+					local slot = Template:Clone()
+					ApplySlotVisuals(slot, baseName, config.IconId)
+					slot.Amount.Text = `x{itemValue.Value}`
+					slot.Amount.Visible = itemValue.Value > 1
+					
+					-- Selection Logic
+					if SelectedE_Item and SelectedE_Item.Name == itemValue.Name then
+						slot.UIStroke.Color = Color3.fromRGB(0, 255, 0) -- Highlight
+						slot.UIStroke.Thickness = 2
+					else
+						slot.UIStroke.Color = Color3.fromRGB(60, 60, 60)
+						slot.UIStroke.Thickness = 2
+					end
+					
+					ApplyTooltipToSlot(slot, category, itemValue.Name)
+
+					slot.Button.Activated:Connect(function()
+						SelectedE_Item = {Name = itemValue.Name, Category = category}
+						RefreshEnchantingLists()
+						UpdateEnchantingUI()
+					end)
+
+					slot.Parent = InvList
+					slot.Visible = true
+				end
+			end
+		end
+
+		-- Populate Tomes
+		local matFolder = ItemsFolder:FindFirstChild("Material")
+		if matFolder then
+			for _, itemValue in ipairs(matFolder:GetChildren()) do
+				local baseName = ParseCompoundName(itemValue.Name)
+				local config = GetItemConfig("Material", baseName)
+
+				if config and config.MaterialType == "Enchantment" and config.EnchantmentData and not config.AvailableEnchantments then
+					local slot = Template:Clone()
+					ApplySlotVisuals(slot, baseName, config.IconId)
+					slot.Amount.Text = `x{itemValue.Value}`
+					slot.Amount.Visible = itemValue.Value > 1
+					
+					-- Selection Logic
+					if SelectedE_Tome == itemValue.Name then
+						slot.UIStroke.Color = Color3.fromRGB(0, 255, 0) -- Highlight
+						slot.UIStroke.Thickness = 2
+					else
+						slot.UIStroke.Color = Color3.fromRGB(60, 60, 60)
+						slot.UIStroke.Thickness = 2
+					end
+					
+					ApplyTooltipToSlot(slot, "Material", itemValue.Name)
+
+					slot.Button.Activated:Connect(function()
+						SelectedE_Tome = itemValue.Name
+						RefreshEnchantingLists()
+						UpdateEnchantingUI()
+					end)
+
+					slot.Parent = TomesList
+					slot.Visible = true
+				end
+			end
+		end
+	end
+
+	--------------------------------------------------------------------------------
+	-- Cleansing Logic
+
+	local function UpdateCleansingUI()
+		local Content = CleansingFrame.Content
+
+		local ItemIcon = Content.ItemPreview.Icon
+		local ItemNameText = Content.ItemName.NameText
+
+		local Btn1 = Content.SelectedItem.Enchantments.Enchantment1
+		local Btn2 = Content.SelectedItem.Enchantments.Enchantment2
+		local CostText = Content.CleanseCost.Cost.CleanserCost
+
+		if SelectedC_Item then
+			local baseName, enchants = ParseCompoundName(SelectedC_Item.Name)
+			local config = GetItemConfig(SelectedC_Item.Category, baseName)
+
+			if config.IconId then
+				ItemIcon.Image = tonumber(config.IconId) and `rbxassetid://{config.IconId}` or config.IconId
+				ItemIcon.Visible = true
+			else
+				ItemIcon.Visible = false
+			end
+			ItemNameText.Text = baseName
+
+			-- Safety check: if an item upgrades/changes and the selected enchant is gone
+			if SelectedC_Enchant and not table.find(enchants, SelectedC_Enchant) then
+				SelectedC_Enchant = nil
+			end
+
+			-- Setup Enchantment 1 Button
+			if enchants[1] then
+				local eConfig1 = GetEnchantConfigById(enchants[1])
+				if eConfig1 and eConfig1.EnchantmentData then
+					Btn1.TextLabel.Text = "✦ " .. eConfig1.EnchantmentData.DisplayName
+					Btn1.TextLabel.TextColor3 = eConfig1.SpecialColor or Color3.new(1, 1, 1)
+					Btn1.Visible = true
+					Btn1.BackgroundTransparency = (SelectedC_Enchant == enchants[1]) and 0.5 or 1
+				else
+					Btn1.Visible = false
+				end
+			else
+				Btn1.Visible = false
+			end
+
+			-- Setup Enchantment 2 Button
+			if enchants[2] then
+				local eConfig2 = GetEnchantConfigById(enchants[2])
+				if eConfig2 and eConfig2.EnchantmentData then
+					Btn2.TextLabel.Text = "✦ " .. eConfig2.EnchantmentData.DisplayName
+					Btn2.TextLabel.TextColor3 = eConfig2.SpecialColor or Color3.new(1, 1, 1)
+					Btn2.Visible = true
+					Btn2.BackgroundTransparency = (SelectedC_Enchant == enchants[2]) and 0.5 or 1
+				else
+					Btn2.Visible = false
+				end
+			else
+				Btn2.Visible = false
+			end
+		else
+			ItemIcon.Visible = false
+			ItemNameText.Text = "Select an Item"
+			Btn1.Visible = false
+			Btn2.Visible = false
+			SelectedC_Enchant = nil
+		end
+
+		-- Update Required Cleanser Text
+		if SelectedC_Enchant then
+			local eConfig = GetEnchantConfigById(SelectedC_Enchant)
+			local cleanserName = eConfig.EnchantmentData.Cleanser .. " Cleanser"
+
+			local ownedCount = 0
+			local matFolder = ItemsFolder:FindFirstChild("Material")
+			if matFolder and matFolder:FindFirstChild(cleanserName) then
+				ownedCount = matFolder[cleanserName].Value
+			end
+
+			local colorHex = ownedCount > 0 and "#32CD32" or "#E74C3C" -- Green if owned, Red if missing
+			local specialHex = eConfig.SpecialColor:ToHex()
+			CostText.Text = string.format('Cost: 1x <font color="#%s">%s</font> <font color="%s">(Owned: %d)</font>', specialHex, cleanserName, colorHex, ownedCount)
+		else
+			CostText.Text = "???"
+		end
+	end
+
+	local function RefreshCleansingLists()
+		local InvList = CleansingFrame.Content.ItemInventoryList
+		ClearList(InvList)
+
+		for _, category in ipairs({"Tool", "Armor"}) do
+			local folder = ItemsFolder:FindFirstChild(category)
+			if not folder then continue end
+
+			for _, itemValue in ipairs(folder:GetChildren()) do
+				local baseName, enchants = ParseCompoundName(itemValue.Name)
+				local config = GetItemConfig(category, baseName)
+
+				-- Only show items WITH enchants
+				if config and #enchants > 0 then
+					local slot = Template:Clone()
+					ApplySlotVisuals(slot, baseName, config.IconId)
+					slot.Amount.Text = `x{itemValue.Value}`
+					slot.Amount.Visible = itemValue.Value > 1
+					
+					-- Selection Logic
+					if SelectedC_Item and SelectedC_Item.Name == itemValue.Name then
+						slot.UIStroke.Color = Color3.fromRGB(0, 255, 0) -- Highlight
+						slot.UIStroke.Thickness = 2
+					else
+						slot.UIStroke.Color = Color3.fromRGB(60, 60, 60)
+						slot.UIStroke.Thickness = 1
+					end
+					
+					ApplyTooltipToSlot(slot, category, itemValue.Name)
+
+					slot.Button.Activated:Connect(function()
+						SelectedC_Item = {Name = itemValue.Name, Category = category}
+						SelectedC_Enchant = nil
+						RefreshCleansingLists()
+						UpdateCleansingUI()
+					end)
+
+					slot.Parent = InvList
+					slot.Visible = true
+				end
+			end
+		end
+	end
+
+	--------------------------------------------------------------------------------
+	-- Actions & Server Requests
+
+	UnveilingFrame.Content.UnveilPreview.Unveil.Activated:Connect(function()
+		if not SelectedVeiledTome then return end
+		local success, msg = EventModule:InvokeServer("UnveilTome", SelectedVeiledTome)
+		if success then
+			SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+
+			task.wait(0.1)
+			SelectedVeiledTome = nil -- Deselect the tome since it was just consumed
+			RefreshUnveilingList()
+			UpdateUnveilingUI()
+		else
+			CreateNotification("Error", msg or "Could not unveil.", 12900311562)
+		end
+	end)
+
+	EnchantingFrame.Content.EnchantFrame.Enchant.Activated:Connect(function()
+		if not SelectedE_Item or not SelectedE_Tome then return end
+
+		-- Check if the UI marked the button as invalid (Red)!
+		local EnchantBtn = EnchantingFrame.Content.EnchantFrame.Enchant
+		if EnchantBtn.AutoButtonColor == false then 
+			return 
+		end
+
+		local success, msg = EventModule:InvokeServer("EnchantItem", SelectedE_Item.Name, SelectedE_Tome)
+		if success then
+			SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+			CreateNotification("Success", msg or "Item Enchanted!", 12900311398)
+
+			SelectedE_Item, SelectedE_Tome = nil, nil
+			task.wait(0.1)
+			RefreshEnchantingLists()
+			UpdateEnchantingUI()
+		else
+			CreateNotification("Error", msg or "Failed to enchant.", 12900311562)
+		end
+	end)
+
+	-- Toggle Enchantment 1
+	CleansingFrame.Content.SelectedItem.Enchantments.Enchantment1.Activated:Connect(function()
+		if not SelectedC_Item then return end
+		local baseName, enchants = ParseCompoundName(SelectedC_Item.Name)
+
+		if enchants[1] then
+			if SelectedC_Enchant == enchants[1] then
+				SelectedC_Enchant = nil -- Deselect if already selected
+			else
+				SelectedC_Enchant = enchants[1] -- Select
+			end
+			UpdateCleansingUI()
+		end
+	end)
+
+	-- Toggle Enchantment 2
+	CleansingFrame.Content.SelectedItem.Enchantments.Enchantment2.Activated:Connect(function()
+		if not SelectedC_Item then return end
+		local baseName, enchants = ParseCompoundName(SelectedC_Item.Name)
+
+		if enchants[2] then
+			if SelectedC_Enchant == enchants[2] then
+				SelectedC_Enchant = nil -- Deselect if already selected
+			else
+				SelectedC_Enchant = enchants[2] -- Select
+			end
+			UpdateCleansingUI()
+		end
+	end)
+
+	-- Cleanse Button Connection
+	CleansingFrame.Content.ItemPreview.Cleanse.Activated:Connect(function()
+		if not SelectedC_Item or not SelectedC_Enchant then return end
+
+		local success, msg = EventModule:InvokeServer("CleanseItem", SelectedC_Item.Name, SelectedC_Enchant)
+		if success then
+			SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+			CreateNotification("Success", msg or "Item Cleansed!", 12900311398)
+			
+			SelectedC_Item, SelectedC_Enchant = nil, nil
+			task.wait(0.1)
+			RefreshCleansingLists()
+			UpdateCleansingUI()
+		else
+			CreateNotification("Error", msg or "Failed to cleanse.", 12900311562)
+		end
+	end)
+
+	--------------------------------------------------------------------------------
+	-- Tab & Menu Management
+
+	local function SwitchTab(tabName)
+		CurrentTab = tabName
+		SetCanvasGroupVisibility(UnveilingFrame, tabName == "Unveiling")
+		SetCanvasGroupVisibility(EnchantingFrame, tabName == "Enchanting")
+		SetCanvasGroupVisibility(CleansingFrame, tabName == "Cleansing")
+
+		if tabName == "Unveiling" then
+			RefreshUnveilingList()
+			UpdateUnveilingUI()
+		elseif tabName == "Enchanting" then
+			SelectedE_Item, SelectedE_Tome = nil, nil
+			RefreshEnchantingLists()
+			UpdateEnchantingUI()
+		elseif tabName == "Cleansing" then
+			SelectedC_Item, SelectedC_Enchant = nil, nil
+			RefreshCleansingLists()
+			UpdateCleansingUI()
+		end
+	end
+
+	-- Wire up the Tab buttons and Exit button for every frame dynamically
+	local function SetupFrameButtons(frame)
+		local exitBtn = frame:FindFirstChild("ExitButton", true)
+		if exitBtn then
+			exitBtn.Activated:Connect(function()
+				isOpen = false
+				SetCanvasGroupVisibility(UnveilingFrame, false)
+				SetCanvasGroupVisibility(EnchantingFrame, false)
+				SetCanvasGroupVisibility(CleansingFrame, false)
+			end)
+		end
+
+		local unveilBtn = frame:FindFirstChild("OpenUnveiling", true)
+		if unveilBtn then unveilBtn.Activated:Connect(function() SwitchTab("Unveiling") end) end
+
+		local enchantBtn = frame:FindFirstChild("OpenEnchanting", true)
+		if enchantBtn then enchantBtn.Activated:Connect(function() SwitchTab("Enchanting") end) end
+
+		local cleanseBtn = frame:FindFirstChild("OpenCleansing", true)
+		if cleanseBtn then cleanseBtn.Activated:Connect(function() SwitchTab("Cleansing") end) end
+	end
+
+	SetupFrameButtons(UnveilingFrame)
+	SetupFrameButtons(EnchantingFrame)
+	SetupFrameButtons(CleansingFrame)
+
+	--------------------------------------------------------------------------------
+	-- Init
+
+	local function PerNPC(Model)
+		-- Find the prompt directly inside the NPC
+		local Prompt = Model:FindFirstChildWhichIsA("ProximityPrompt", true) or Model:WaitForChild("ProximityPrompt", 3)
+		if not Prompt then return end
+
+		Prompt.Triggered:Connect(function(triggerPlayer)
+			if triggerPlayer == Player and Player.Character then
+				isOpen = true
+				SwitchTab("Unveiling")
+
+				-- Replicate the Auto-Close logic if the player walks too far away (20 studs)
+				local RootPart = Player.Character:FindFirstChild("HumanoidRootPart")
+				local NPCPart = Model:FindFirstChild("Torso") or Model.PrimaryPart or Model:FindFirstChildWhichIsA("BasePart", true)
+
+				if RootPart and NPCPart then
+					task.spawn(function()
+						while isOpen do
+							local distance = (RootPart.Position - NPCPart.Position).Magnitude
+							if distance > 20 then
+								isOpen = false
+								SetCanvasGroupVisibility(UnveilingFrame, false)
+								SetCanvasGroupVisibility(EnchantingFrame, false)
+								SetCanvasGroupVisibility(CleansingFrame, false)
+								break
+							end
+							task.wait(0.2)
+						end
+					end)
+				end
+			end
+		end)
+	end
+
+	for _, Model in CollectionService:GetTagged("Enchanter") do PerNPC(Model) end
+	CollectionService:GetInstanceAddedSignal("Enchanter"):Connect(PerNPC)
+
+end

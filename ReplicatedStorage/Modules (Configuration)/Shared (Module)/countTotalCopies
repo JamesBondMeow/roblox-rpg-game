@@ -1,6 +1,6 @@
 --[[
 	countTotalCopies
-	
+
 	Used to check how many copies of an item someone has
 ]]
 
@@ -18,22 +18,34 @@ local GameConfig = require(ReplicatedStorage.GameConfig)
 --------------------------------------------------------------------------------
 
 return function(Item, Player)
+
+	-- If the item itself or its name is nil, the player can't have any copies.
+	if not Item or not Item.Name then
+		return 0
+	end
+
 	local Player = Player or Players.LocalPlayer
 	local pData = PlayerData:WaitForChild(Player.UserId)
-	
+	if not pData then return 0 end
+
 	local Count = 0
-	for Category, Info in GameConfig.Categories do
-		local InventoryItems = pData.Items[Category]
+
+	-- Iterate only through the specific item category for efficiency
+	local itemType = Item.Type
+
+	if itemType and GameConfig.Categories[itemType] and pData.Items:FindFirstChild(itemType) then
+		local InventoryItems = pData.Items[itemType]
 		local Value = InventoryItems:FindFirstChild(Item.Name)
-		
-		local isNumberValue = Value and Value:IsA("NumberValue")
-		if isNumberValue then
-			if Value then
-				Count += Value.Value
-			end
-		elseif not isNumberValue then
-			for _, Value in InventoryItems:GetChildren() do
-				if Value.Name == Item.Name then
+
+		if Value and Value:IsA("NumberValue") then
+			Count = Value.Value
+		else
+			-- Count individual instances (like unique orbs, though we reverted that)
+			-- This part might need adjustment depending on how non-stackable items are stored now
+			for _, childValue in InventoryItems:GetChildren() do
+				-- Check if the base name matches (e.g., "OrbName" from "OrbName#1")
+				local baseName = childValue.Name:match("(.+)#%d+") or childValue.Name
+				if baseName == Item.Name then
 					Count += 1
 				end
 			end

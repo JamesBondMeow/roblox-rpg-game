@@ -72,16 +72,8 @@ return function(Gui)
 		local Titlebar = PopupFrame:WaitForChild("Titlebar")
 		local Primary, Secondary, Background = ColorModule:ConvertToHSV3(Color)
 
-		Titlebar.BackgroundColor3 = Primary
-		PopupFrame.ExitButton.TextColor3 = Secondary
-		PopupFrame.Content.List.Sell.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Sell.TextColor3 = Secondary
-		PopupFrame.Content.List.Amount.BackgroundColor3 = Primary
-		PopupFrame.Content.List.Amount.PlaceholderColor3 = Secondary:Lerp(Primary, 0.05)
-		PopupFrame.Content.List.Amount.TextColor3 = Secondary
 		PopupFrame.Content.ItemIcon.BackgroundColor3 = Secondary
 		PopupFrame.BackgroundColor3 = Background
-		PopupFrame.UIStroke.Color = Background
 
 		return Primary, Secondary, Background
 	end
@@ -94,23 +86,15 @@ return function(Gui)
 		ActiveColor.Secondary = Secondary
 		ActiveColor.Background = Background
 
-		Titlebar.BackgroundColor3 = Primary
-		Titlebar.TextColor3 = Secondary
-
-		MainFrame.ExitButton.TextColor3 = Secondary
-		MainFrame.BackgroundColor3 = Background
-		MainFrame.UIStroke.Color = Background
-
 		-- Tab buttons & frames
 		for _, Instance in TabButtons.ScrollingFrame:GetChildren() do
 			if Instance:IsA("TextButton") then
 				local TabFrame = TabFrames[Instance.Name]
-				TabFrame.ScrollingFrame.ScrollBarImageColor3 = Primary
-				TabFrame.Frame.BackgroundColor3 = Secondary
+				TabFrame.Frame.BackgroundColor3 = Primary
 				
 				local _Primary, _Secondary = ColorModule:ConvertToHSV3(GameConfig.Categories[Instance.Text].Color)
 				Instance.BackgroundColor3 = ActiveTab == Instance.Name and _Secondary:Lerp(_Primary, 0.3) or _Primary
-				Instance.TextColor3 = ActiveTab == Instance.Name and _Primary or _Secondary:Lerp(_Primary, 0.1)
+				Instance.TextColor3 = ActiveTab == Instance.Name and _Secondary:Lerp(_Primary, 0.3) or _Primary
 			end
 		end
 
@@ -121,7 +105,7 @@ return function(Gui)
 			local CategoryBaseColor = ColorModule:GetPrimaryColor(Slot.Item)
 			local Primary, Secondary, Background = ColorModule:ConvertToHSV3(CategoryBaseColor)
 			
-			Frame.BackgroundColor3 = Secondary:Lerp(Primary, 0.15)
+			Frame.BackgroundColor3 = Primary:Lerp(Secondary, 0.15)
 			Frame.BackgroundTransparency = 0
 			Frame:WaitForChild("ItemName").TextColor3 = Primary
 			Frame:WaitForChild("ItemLevel").TextColor3 = Primary
@@ -172,7 +156,11 @@ return function(Gui)
 		local Currency = itemType == "Statistic" and pData.Stats[itemName] or pData.Items[itemType]:FindFirstChild(itemName)
 		local Return = Item.Config.Sell and Item.Config.Sell[3] or Item.Config.Cost and math.floor(Item.Config.Cost[3] / 2)
 
-		Content.ItemName.Text = Item.Name
+		Content.ItemName.Text = Item.BaseName or Item.Name
+		if Item.BaseName and Item.BaseName ~= Item.Name then
+			Content.ItemName.Text = "✦ " .. Item.BaseName
+		end
+		
 		Content.ItemType.Text = Item.Type
 		Content.ItemLevel.Text = `<b>Level</b> {FormatNumber(Item.Config.Level, "Suffix")}`
 		
@@ -233,12 +221,14 @@ return function(Gui)
 		if Success then
 			ClearFocus()
 			ClosePopupFrame()
-			
-			local newText = `{OldPopupItem.Name} (x{FormatNumber(OldRequestedSellAmount, "Suffix")}) has been sold!`
+
+			local itemName = OldPopupItem.BaseName or OldPopupItem.Name
+			local newText = `{itemName} (x{FormatNumber(OldRequestedSellAmount, "Suffix")}) has been sold!`
+
 			CreateNotification("Pawn Success!", newText, 12900311398)
 			SFX:Play2D(GameConfig.SellSFX[1], {Volume = GameConfig.SellSFX[2]})
 		else
-			CreateNotification("Pawn Failure!", Response, 12900311562)
+			CreateNotification("Pawn Failure!", Response or "Failed to sell item.", 12900311562)
 		end
 	end)
 
@@ -294,8 +284,7 @@ return function(Gui)
 				local _Primary, _Secondary = ColorModule:ConvertToHSV3(GameConfig.Categories[Instance.Text].Color)
 				
 				Tween:Play(Instance, {0.5, "Exponential"}, {
-					BackgroundColor3 = Instance == TabButton and _Secondary:Lerp(_Primary, 0.3) or _Primary,
-					TextColor3 = Instance == TabButton and _Primary or _Secondary:Lerp(_Primary, 0.1)
+					BackgroundColor3 = Instance == TabButton and _Secondary:Lerp(_Primary, 0.3) or _Primary
 				})
 			end
 		end
@@ -344,6 +333,90 @@ return function(Gui)
 
 	-- Init
 
+	local function ParseCompoundName(compoundName)
+		local split = string.split(tostring(compoundName), "|")
+		local baseName = split[1]
+		local enchants = {}
+		for i = 2, #split do table.insert(enchants, split[i]) end
+		return baseName, enchants
+	end
+
+	local function RefreshPawnTab(ItemType, TabFrame)
+		-- Clear GUI
+		for _, child in TabFrame.ScrollingFrame:GetChildren() do
+			if child:IsA("GuiButton") or child:IsA("Frame") and child.Name ~= "UIListLayout" then 
+				child:Destroy() 
+			end
+		end
+
+		-- Clear tracking
+		for key, slotData in pairs(ItemSlots) do
+			if slotData.Item.Type == ItemType then ItemSlots[key] = nil end
+		end
+
+		local folder = ItemsFolder:FindFirstChild(ItemType)
+		if not folder then return end
+
+		for _, ItemValue in ipairs(folder:GetChildren()) do
+			local compoundName = ItemValue.Name
+			local baseName, enchants = ParseCompoundName(compoundName)
+			local ItemData = ContentLibrary[ItemType][baseName]
+
+			if not ItemData or (not ItemData.Config.Sell and (not ItemData.Config.Cost or not GameConfig.SellShopItems)) then 
+				continue 
+			end
+
+			local Return = ItemData.Config.Sell and ItemData.Config.Sell[3] or ItemData.Config.Cost and math.floor(ItemData.Config.Cost[3] / 2)
+			if not Return then continue end
+
+			local Frame = script.SlotTemplate:Clone()
+			Frame.Name = compoundName
+			Frame.ItemName.Text = (#enchants > 0 and "✦ " .. baseName) or baseName
+
+			Frame.ItemLevel.Text = ` <b>Lv.</b> {FormatNumber(ItemData.Config.Level, "Suffix")}`
+			Frame.ItemCost.Text = `+{FormatNumber(Return, "Suffix")} <b>{ItemData.Config.Sell and ItemData.Config.Sell[2] or ItemData.Config.Cost[2]}</b>`
+			Frame.Visible = true
+			Frame.Parent = TabFrame.ScrollingFrame
+
+			local ItemIcon = (tonumber(ItemData.Config.IconId) and `rbxassetid://{ItemData.Config.IconId}`) 
+				or typeof(ItemData.Config.IconId) == "string" and ItemData.Config.IconId 
+				or ItemData.Instance:IsA("Tool") and (ItemData.Instance.TextureId ~= "" and ItemData.Instance.TextureId)
+
+			if ItemIcon then Frame.ItemIcon.Image = ItemIcon end
+			Frame.ItemIcon.Visible = (ItemIcon and true) or false
+			
+			UpdateShopColor(Color3.fromRGB(174, 120, 239))
+
+			-- Build a fake Item representation for the Popup
+			local PopupItem = {
+				Name = compoundName,
+				BaseName = baseName,
+				Type = ItemType,
+				Config = ItemData.Config,
+				Instance = ItemData.Instance:Clone()
+			}
+			if #enchants > 0 then
+				PopupItem.Instance:SetAttribute("Enchantments", table.concat(enchants, ","))
+			end
+
+			Frame.Activated:Connect(function()
+				OpenPopupFrame(PopupItem)
+			end)
+
+			ItemSlots[compoundName] = { Item = PopupItem, Frame = Frame }
+		end
+
+		local Sorted = {}
+		for _, Slot in pairs(ItemSlots) do
+			if Slot.Item.Type == ItemType then table.insert(Sorted, Slot) end
+		end
+		table.sort(Sorted, function(A, B) return A.Item.Config.Level < B.Item.Config.Level end)
+		for LayoutOrder, Slot in ipairs(Sorted) do Slot.Frame.LayoutOrder = LayoutOrder end
+
+		TabFrame.ScrollingFrame.CanvasSize = UDim2.fromOffset(0, TabFrame.ScrollingFrame.UIListLayout.AbsoluteContentSize.Y)
+		TabFrame.NoItemsWarning.Visible = (#Sorted == 0)
+	end
+
 	for ItemType, Items in ContentLibrary do
 		local TabFrame = script:WaitForChild("TabFrame"):Clone()
 		TabFrame.Name = ItemType
@@ -357,106 +430,14 @@ return function(Gui)
 		TabButton.Parent = TabButtons:WaitForChild("ScrollingFrame")
 		TabButton.LayoutOrder = GameConfig.Categories[ItemType].LayoutOrder
 
-		-- Switch Tab logic
-		TabButton.Activated:Connect(function()
-			OpenTab(ItemType)
-		end)
+		TabButton.Activated:Connect(function() OpenTab(ItemType) end)
 
-		-- Setup all item slots
-		for _, Item in Items do
-			if not Item.Config.Sell and (not Item.Config.Cost or not GameConfig.SellShopItems) then 
-				continue 
-			end
+		-- Dynamic hooks (Will instantly reflect items sold/bought/enchanted)
+		ItemsFolder:WaitForChild(ItemType).ChildAdded:Connect(function() RefreshPawnTab(ItemType, TabFrame) end)
+		ItemsFolder:WaitForChild(ItemType).ChildRemoved:Connect(function() task.defer(function() RefreshPawnTab(ItemType, TabFrame) end) end)
 
-			local Return = Item.Config.Sell and Item.Config.Sell[3] or Item.Config.Cost and math.floor(Item.Config.Cost[3] / 2)
-			if not Return then
-				continue
-			end
-
-			local Frame = script.SlotTemplate:Clone()
-			Frame.Name = Item.Name
-			Frame.ItemName.Text = Item.Name
-			Frame.ItemLevel.Text = ` <b>Lv.</b> {FormatNumber(Item.Config.Level, "Suffix")}`
-			Frame.ItemCost.Text = `+{FormatNumber(Return, "Suffix")} <b>{Item.Config.Sell and Item.Config.Sell[2] or Item.Config.Cost[2]}</b>`
-			Frame.Visible = ItemsFolder[ItemType]:FindFirstChild(Item.Name) ~= nil
-			Frame.Parent = TabFrame.ScrollingFrame
-
-			local ItemIcon = (tonumber(Item.Config.IconId) and `rbxassetid://{Item.Config.IconId}`) 
-				or typeof(Item.Config.IconId) == "string" and Item.Config.IconId 
-				or Item.Instance:IsA("Tool") and (Item.Instance.TextureId ~= "" and Item.Instance.TextureId)
-			
-			if ItemIcon then
-				Frame.ItemIcon.Image = ItemIcon
-			end
-			
-			Frame.ItemIcon.Visible = (ItemIcon and true) or false
-
-			Frame.Activated:Connect(function()
-				OpenPopupFrame(Item)
-			end)
-
-			ItemSlots[Item.Name] = {
-				Item = Item,
-				Frame = Frame
-			}
-		end
-		
-		TabFrame.ScrollingFrame.CanvasSize = UDim2.fromOffset(0, TabFrame.ScrollingFrame.UIListLayout.AbsoluteContentSize.Y)
-
-		-- Sort all slots by level
-		local Sorted = {}
-		for _, Slot in ItemSlots do
-			table.insert(Sorted, Slot)
-		end
-		table.sort(Sorted, function(A, B)
-			return A.Item.Config.Level < B.Item.Config.Level
-		end)
-		for LayoutOrder, Slot in Sorted do
-			Slot.Frame.LayoutOrder = LayoutOrder
-		end
-
-		-- Show/hide slots from pawn when gained/lost
-		ItemsFolder:WaitForChild(ItemType).ChildAdded:Connect(function(ValueObject)
-			local Slot = ItemSlots[ValueObject.Name]
-			if not Slot then
-				return
-			end
-
-			Slot.Frame.Visible = true
-			TabFrame.NoItemsWarning.Visible = false
-		end)
-		
-		ItemsFolder:WaitForChild(ItemType).ChildRemoved:Connect(function(ValueObject)
-			local Slot = ItemSlots[ValueObject.Name]
-			if not Slot then
-				return
-			end
-
-			task.defer(function()
-				local Owned = CountTotalCopies({Name = ValueObject.Name})
-				if Owned > 0 then
-					return
-				end
-
-				Slot.Frame.Visible = false
-				TabFrame.NoItemsWarning.Visible = true
-				
-				for _, Slot in ItemSlots do
-					if Slot.Item.Type == ItemType and Slot.Frame.Visible then
-						TabFrame.NoItemsWarning.Visible = false
-						break
-					end
-				end
-			end)
-		end)
-
-		TabFrame.NoItemsWarning.Visible = true
-		for _, Slot in ItemSlots do
-			if Slot.Item.Type == ItemType and Slot.Frame.Visible then
-				TabFrame.NoItemsWarning.Visible = false
-				break
-			end
-		end
+		-- Initial Load
+		RefreshPawnTab(ItemType, TabFrame)
 	end
 
 	-------------------------------

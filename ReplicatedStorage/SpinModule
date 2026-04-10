@@ -1,0 +1,75 @@
+local module = {
+	["Spin"] = {
+		["SpinTime"] = 5, -- How many rounds will it go and give the prize?
+		["SpinTimeForReward"] = 86400, -- one day in seconds 
+		["Rewards"] = {
+			["Reward1"] = {
+				["Reward"] = "Gold",
+				["Amount"] = 1000,
+				["TextColor"] = Color3.fromRGB(255, 224, 98),
+				["Rarity"] = 36,
+			},
+			["Reward2"] = {
+				["Reward"] = "Gold",
+				["Amount"] = 2500,
+				["TextColor"] = Color3.fromRGB(255, 224, 98),
+				["Rarity"] = 25,
+			},
+			["Reward3"] = {
+				["Reward"] = "Gold",
+				["Amount"] = 5000,
+				["TextColor"] = Color3.fromRGB(255, 224, 98),
+				["Rarity"] = 20,
+			},
+			["Reward4"] = {
+				["Reward"] = "[☆3] Luck Potion",
+				["ItemType"] = "Consumable",
+				["Amount"] = 3,
+				["TextColor"] = Color3.fromRGB(121, 255, 114),
+				["Rarity"] = 10,
+			},
+			["Reward5"] = {
+				["Reward"] = "[☆7] Essence",
+				["ItemType"] = "Material",
+				["Amount"] = 3,
+				["TextColor"] = Color3.fromRGB(111, 231, 255),
+				["Rarity"] = 5,
+			},
+			["Reward6"] = {
+				["Reward"] = "Soul Fragment",
+				["ItemType"] = "Material",
+				["Amount"] = 25,
+				["TextColor"] = Color3.fromRGB(199, 108, 255),
+				["Rarity"] = 3,
+			},
+			["Reward7"] = {
+				["Reward"] = "[☆7] Veiled Enchant Tome",
+				["ItemType"] = "Material",
+				["Amount"] = 1,
+				["TextColor"] = Color3.fromRGB(255, 107, 107),
+				["Rarity"] = 1,
+			},
+		},
+	},
+}
+
+module.getRandomReward = function()
+	local totalChance = 0
+	for _, rewardData in pairs(module.Spin.Rewards) do
+		totalChance = totalChance + rewardData.Rarity
+	end
+
+	local randomValue = math.random() * totalChance
+	local accumulatedChance = 0
+
+	for rewardName, rewardData in pairs(module.Spin.Rewards) do
+		accumulatedChance = accumulatedChance + rewardData.Rarity
+		if randomValue <= accumulatedChance then
+			return rewardName
+		end
+	end
+
+	return nil
+end
+
+return module

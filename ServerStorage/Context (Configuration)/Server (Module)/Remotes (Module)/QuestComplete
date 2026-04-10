@@ -15,6 +15,7 @@ local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
 
 local GiftDrops = require(ServerStorage.Modules.Server.giftDrops)
 local QuestStart = require(ServerStorage.Context.Server.Remotes.QuestStart)
+local removeItemWithAmount = require(ServerStorage.Modules.Server.removeItemWithAmount)
 
 local GameConfig = require(ReplicatedStorage.GameConfig)
 
@@ -34,41 +35,51 @@ end
 
 local function RequestCompleteQuest(Player, QuestName)
 	if typeof(QuestName) ~= "string" then return end
-	
+
 	local pData = PlayerData:FindFirstChild(Player.UserId)
 	if not pData then return end
-	
+
 	local Quests = pData:FindFirstChild("Quests")
 	if not Quests then return end
-	
+
 	local QuestData = QuestLibrary[QuestName]
 	if not QuestData then return end
-	
+
 	if not Quests.Active:FindFirstChild(QuestName) or Quests.Completed:FindFirstChild(QuestName) then
 		return false, "You've already taken/aren't taking this quest."
 	end
-	
+
 	local Progress = GetQuestProgress(QuestName, Player)
 	if Progress >= 1 or Progress == true then
+
+		-- Check if it's a fetch quest and remove the items
+		if QuestData.Requirements and QuestData.Requirements.Fetch then
+			for _, FetchItem in QuestData.Requirements.Fetch do
+				-- Structure: {Type, Name, Amount}
+				local ItemType, ItemName, Amount = FetchItem[1], FetchItem[2], FetchItem[3]
+				removeItemWithAmount(Player, ItemType, ItemName, Amount)
+			end
+		end
+
 		local QuestFolder = Quests.Active:WaitForChild(QuestName)
 		QuestFolder:Destroy()
-		
+
 		if not QuestData.Repeatable then
 			local Value = Instance.new("BoolValue")
 			Value.Parent = Quests.Completed
 			Value.Name = QuestName
 			Value.Value = true
 		end
-		
+
 		EventModule:FireClient("SendNotification", Player, "Quest completed!", `You have successfully completed '{QuestName}'`, 12900311398)
-		
+
 		if QuestData.Rewards then
 			GiftDrops(Player, QuestData.Rewards)
 		end
-		
+
 		if QuestData.Succession then
 			local NewQuestName = nil
-			
+
 			local Config = require(QuestData.NPCInstance.Config)
 			for Index, QuestOffer in Config.QuestOffers do
 				if QuestOffer.Name == QuestName then
@@ -76,14 +87,14 @@ local function RequestCompleteQuest(Player, QuestName)
 					break
 				end
 			end
-			
+
 			if NewQuestName then
 				task.defer(function()
 					QuestStart:ForceStartQuest(Player, NewQuestName)
 				end)
 			end
 		end
-		
+
 		return true
 	else
 		return false, "You haven't finished this quest yet."

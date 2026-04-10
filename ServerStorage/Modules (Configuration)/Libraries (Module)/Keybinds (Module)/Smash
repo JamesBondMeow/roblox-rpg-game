@@ -1,0 +1,117 @@
+-- [SERVER]
+-- Smash Ability Logic
+
+local Debris = game:GetService("Debris")
+local ServerStorage = game:GetService("ServerStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DamageLib = require(ServerStorage.Modules.Libraries.Damage)
+local MobList = require(ServerStorage.Modules.Libraries.Mob.MobList)
+
+local Keybind = {}
+
+--// Constants
+local MANA_COST = 30
+local SMASH_RADIUS = 25
+local SMASH_DURATION = 0.3
+local ANIMATION_DELAY = 0.5
+
+function Keybind:Validate(Player)
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChild("Humanoid")
+	local ManaFolder = Humanoid and Humanoid:FindFirstChild("Mana")
+	local ManaStat = ManaFolder and ManaFolder.Mana
+
+	return ManaStat and ManaStat:GetAttribute("Default") >= MANA_COST
+end
+
+function Keybind:OnActivated(Player)
+	if not self:Validate(Player) then return end
+
+	local Character = Player.Character
+	local Root = Character:FindFirstChild("HumanoidRootPart")
+	local Humanoid = Character:FindFirstChild("Humanoid")
+	if not Root or not Humanoid then return end
+
+	-- 1. Deduct Mana INSTANTLY so they can't spam while waiting for the delay
+	local ManaStat = Humanoid.Mana.Mana
+	ManaStat:SetAttribute("Default", ManaStat:GetAttribute("Default") - MANA_COST)
+
+	-- 2. Delay the damage and VFX to match the animation
+	task.delay(ANIMATION_DELAY, function()
+		if not Root or not Root.Parent then return end -- Safety check if player died during delay
+
+		-- Tool & Damage Setup (1.25x Damage)
+		local Tool = Character:FindFirstChildWhichIsA("Tool")
+		local ItemConfig = Tool and require(Tool.ItemConfig)
+		local BaseDamage = ItemConfig and ItemConfig.Damage or 10
+		if type(BaseDamage) == "table" then
+			BaseDamage = math.random(BaseDamage[1], BaseDamage[2])
+		end
+		local SmashDamage = math.round(BaseDamage * 1.25)
+
+		-- 3. Create Smash AOE Part (Centered on player's position at time of impact)
+		local SmashPart = Instance.new("Part")
+		SmashPart.Name = "SmashVFX"
+		SmashPart.Shape = Enum.PartType.Cylinder
+		SmashPart.Size = Vector3.new(2, SMASH_RADIUS, SMASH_RADIUS)
+		SmashPart.Transparency = 1
+		SmashPart.CanCollide = false
+		SmashPart.Anchored = true
+		SmashPart.CFrame = (Root.CFrame * CFrame.new(0, 0, -5)) * CFrame.Angles(0, 0, math.rad(90))
+		SmashPart.Parent = workspace.Temporary
+
+		-- VFX Handling
+		local EffectFolder = ReplicatedStorage.Assets.Effects:FindFirstChild("GreatswordSmash")
+		if EffectFolder then
+			local AttachmentTemplate = EffectFolder:FindFirstChildWhichIsA("Attachment")
+			if AttachmentTemplate then
+				local ClonedAttachment = AttachmentTemplate:Clone()
+				ClonedAttachment.Parent = SmashPart
+				for _, vfx in ipairs(ClonedAttachment:GetChildren()) do
+					if vfx:IsA("ParticleEmitter") then 
+						vfx:Emit(vfx:GetAttribute("EmitCount") or 30) 
+					end
+				end
+			end
+		end
+
+		-- 4. Continuous Hit Detection Loop
+		local HitMobs = {}
+		local StartTime = os.clock()
+
+		-- No task.spawn needed here because we are already inside a task.delay thread
+		while os.clock() - StartTime < SMASH_DURATION do
+			local dt = RunService.Heartbeat:Wait()
+
+			local Params = OverlapParams.new()
+			Params.FilterType = Enum.RaycastFilterType.Include
+			Params.FilterDescendantsInstances = {workspace:WaitForChild("Mobs")}
+
+			local PartsInArea = workspace:GetPartsInPart(SmashPart, Params)
+
+			for _, part in ipairs(PartsInArea) do
+				local mobInstance = part.Parent
+				if CollectionService:HasTag(mobInstance, "Mob") and not HitMobs[mobInstance] then
+					local mobObject = MobList[mobInstance]
+					if mobObject and not mobObject.isDead then
+						HitMobs[mobInstance] = true
+						DamageLib:DamageMob(Player, mobObject, {
+							Ignore = true, 
+							Damage = SmashDamage, 
+							Tool = Tool, 
+							ClassType = "Skill"
+						})
+					end
+				end
+			end
+		end
+
+		Debris:AddItem(SmashPart, 0.3)
+	end)
+end
+
+function Keybind:OnLetGo(Player) end
+
+return Keybind

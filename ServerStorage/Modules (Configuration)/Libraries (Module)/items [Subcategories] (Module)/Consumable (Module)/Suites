@@ -49,28 +49,46 @@ function Consumes:Health(Player, Tool, Properties)
 	if string.find(Tool.Name, "Potion") then
 		PotionBase(Tool)
 	end
-	
+
+	local Healed = Properties.Healed
 	local Boost = Properties.Boost
 	local Percentage = Properties.Percentage
 	local Duration = Properties.Duration
-	
-	-- Heal percentage of health
+
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
 	if not Humanoid then 
 		return 
 	end
-	if Percentage then
-		local Health = Humanoid.MaxHealth * Percentage
-		Humanoid.Health = math.clamp(Humanoid.Health + Health, 0, Humanoid.MaxHealth)
+
+	-- 1. Heal percentage of health (done BEFORE max health increase)
+	if Healed then
+		local HealAmount = Humanoid.MaxHealth * Healed
+		Humanoid.Health = math.clamp(Humanoid.Health + HealAmount, 0, Humanoid.MaxHealth)
 	end
-	
+
 	-- Get effects registry
 	local Statuses = Player:WaitForChild("Statuses", 1)
-	local Effect = Statuses and Statuses:WaitForChild("Regeneration")
-	if Effect then 
-		Effect:SetAttribute("Duration", Effect:GetAttribute("Duration") + Duration)
-		Effect:SetAttribute("Boost", Boost)
+	if not Statuses then 
+		return 
+	end
+
+	-- 2. Boost health regeneration
+	if Boost then
+		local RegenEffect = Statuses:FindFirstChild("Regeneration") or Statuses:WaitForChild("Regeneration", 1)
+		if RegenEffect then 
+			RegenEffect:SetAttribute("Duration", RegenEffect:GetAttribute("Duration") + Duration)
+			RegenEffect:SetAttribute("Boost", Boost)
+		end
+	end
+
+	-- 3. Increase max health 
+	if Percentage then
+		local HealthEffect = Statuses:FindFirstChild("Health") or Statuses:WaitForChild("Health", 1)
+		if HealthEffect then
+			HealthEffect:SetAttribute("Duration", HealthEffect:GetAttribute("Duration") + Duration)
+			HealthEffect:SetAttribute("Boost", Percentage)
+		end
 	end
 end
 
@@ -108,6 +126,25 @@ function Consumes:Strength(Player, Tool, Properties)
 	
 	-- Set effect
 	local Effect = Statuses:WaitForChild("Strength")
+	Effect:SetAttribute("Duration", Effect:GetAttribute("Duration") + Duration)
+	Effect:SetAttribute("Boost", Multiplier)
+end
+
+function Consumes:Luck(Player, Tool, Properties)
+	PotionBase(Tool)
+
+	-- Properties
+	local Multiplier = Properties.Multiplier
+	local Duration = Properties.Duration
+
+	-- Get effects registry
+	local Statuses = Player:WaitForChild("Statuses", 1)
+	if not Statuses then 
+		return 
+	end
+
+	-- Set effect
+	local Effect = Statuses:WaitForChild("Luck")
 	Effect:SetAttribute("Duration", Effect:GetAttribute("Duration") + Duration)
 	Effect:SetAttribute("Boost", Multiplier)
 end

@@ -1,0 +1,117 @@
+-- [SERVER]
+-- Strike Ability Logic
+
+local Debris = game:GetService("Debris")
+local ServerStorage = game:GetService("ServerStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DamageLib = require(ServerStorage.Modules.Libraries.Damage)
+local MobList = require(ServerStorage.Modules.Libraries.Mob.MobList)
+
+local Keybind = {}
+
+--// Constants
+local MANA_COST = 20
+local STRIKE_RANGE = 5 
+local STRIKE_SIZE = Vector3.new(10, 10, 10)
+local STRIKE_DURATION = 0.5
+
+function Keybind:Validate(Player)
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChild("Humanoid")
+	local ManaFolder = Humanoid and Humanoid:FindFirstChild("Mana")
+	local ManaStat = ManaFolder and ManaFolder.Mana
+
+	return ManaStat and ManaStat:GetAttribute("Default") >= MANA_COST
+end
+
+function Keybind:OnActivated(Player)
+	if not self:Validate(Player) then return end
+
+	local Character = Player.Character
+	local Root = Character:FindFirstChild("HumanoidRootPart")
+	local Humanoid = Character:FindFirstChild("Humanoid")
+	if not Root or not Humanoid then return end
+
+	-- Deduct Mana
+	local ManaStat = Humanoid.Mana.Mana
+	ManaStat:SetAttribute("Default", ManaStat:GetAttribute("Default") - MANA_COST)
+
+	-- Tool & Damage Setup (2.6x Damage)
+	local Tool = Character:FindFirstChildWhichIsA("Tool")
+	local ItemConfig = require(Tool.ItemConfig)
+	local BaseDamage = ItemConfig.Damage
+	if type(BaseDamage) == "table" then
+		BaseDamage = math.random(BaseDamage[1], BaseDamage[2])
+	end
+	local StrikeDamage = math.round(BaseDamage * 2.6)
+
+	-- Create Strike VFX Part
+	local StrikePart = Instance.new("Part")
+	StrikePart.Name = "StrikeVFX"
+	StrikePart.Size = Vector3.new(4, 1, 12)
+	StrikePart.Transparency = 1
+	StrikePart.CanCollide = false
+	StrikePart.Anchored = true
+	StrikePart.CFrame = (Root.CFrame * CFrame.new(0, 0, -STRIKE_RANGE)) * CFrame.Angles(0, math.rad(180), 0)
+	StrikePart.Parent = workspace.Temporary
+
+	-- VFX Handling
+	local EffectFolder = ReplicatedStorage.Assets.Effects:FindFirstChild("DaggerStrike")
+	if EffectFolder then
+		local AttachmentTemplate = EffectFolder:FindFirstChildWhichIsA("Attachment")
+
+		if AttachmentTemplate then
+			-- Clone the entire attachment (including all particle emitters inside it)
+			local ClonedAttachment = AttachmentTemplate:Clone()
+			ClonedAttachment.Parent = StrikePart
+
+			-- Iterate through the emitters INSIDE the cloned attachment
+			for _, vfx in ipairs(ClonedAttachment:GetChildren()) do
+				if vfx:IsA("ParticleEmitter") then 
+					vfx:Emit(vfx:GetAttribute("EmitCount") or 20) 
+				end
+			end
+		end
+	end
+
+	-- Continuous Hit Detection Loop
+	local HitMobs = {}
+	local StartTime = os.clock()
+
+	task.spawn(function()
+		while os.clock() - StartTime < STRIKE_DURATION do
+			RunService.Heartbeat:Wait()
+
+			-- Update position to follow player
+			StrikePart.CFrame = (Root.CFrame * CFrame.new(0, 0, -STRIKE_RANGE)) * CFrame.Angles(0, math.rad(180), 0)
+
+			local Params = OverlapParams.new()
+			Params.FilterType = Enum.RaycastFilterType.Include
+			Params.FilterDescendantsInstances = {workspace:WaitForChild("Mobs")}
+
+			local PartsInArea = workspace:GetPartBoundsInBox(StrikePart.CFrame, StrikePart.Size, Params)
+			for _, part in ipairs(PartsInArea) do
+				local mobInstance = part.Parent
+				if CollectionService:HasTag(mobInstance, "Mob") and not HitMobs[mobInstance] then
+					local mobObject = MobList[mobInstance]
+					if mobObject and not mobObject.isDead then
+						HitMobs[mobInstance] = true
+						DamageLib:DamageMob(Player, mobObject, {
+							Ignore = true, 
+							Damage = StrikeDamage, 
+							Tool = Tool, 
+							ClassType = "Skill"
+						})
+					end
+				end
+			end
+		end
+		Debris:AddItem(StrikePart, 0.5)
+	end)
+end
+
+function Keybind:OnLetGo(Player) end
+
+return Keybind

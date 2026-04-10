@@ -1,0 +1,67 @@
+--[[
+	RespawnStoneClient
+	Handles the local visual toggling of Respawn Stones.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+
+local Player = Players.LocalPlayer
+
+local CreateNotification = require(ReplicatedStorage.Modules.Client.createNotification)
+
+local ACTIVE_COLOR = Color3.fromRGB(93, 163, 255)
+local INACTIVE_COLOR = Color3.fromRGB(0, 0, 0)
+
+-- Keep track of the last respawn to prevent the notification from firing when you first join the game
+local lastRespawn = Player:GetAttribute("RespawnPoint")
+
+local function UpdateVisuals()
+	local currentRespawn = Player:GetAttribute("RespawnPoint")
+
+	for _, stone in ipairs(CollectionService:GetTagged("RespawnStone")) do
+		-- 1. Update Star Visuals
+		local star = stone:FindFirstChild("Star", true)
+		if star and (star:IsA("MeshPart") or star:IsA("BasePart")) then
+			if stone.Name == currentRespawn then
+				star.Color = ACTIVE_COLOR
+			else
+				star.Color = INACTIVE_COLOR
+			end
+		end
+
+		-- 2. Update Proximity Prompt
+		local prompt = stone:FindFirstChildWhichIsA("ProximityPrompt", true)
+		if prompt then
+			if stone.Name == currentRespawn then
+				prompt.ActionText = "Active Respawn"
+				prompt.Enabled = false
+			else
+				prompt.ActionText = "Set Respawn Point"
+				prompt.Enabled = true
+			end
+		end
+	end
+end
+
+-- Refresh visuals if a new stone streams in while exploring
+CollectionService:GetInstanceAddedSignal("RespawnStone"):Connect(function()
+	-- Small delay ensures the server has had time to parent the Prompt to the new stone
+	task.delay(0.5, UpdateVisuals)
+end)
+
+-- Automatically react when the server updates our RespawnPoint
+Player:GetAttributeChangedSignal("RespawnPoint"):Connect(function()
+	local currentRespawn = Player:GetAttribute("RespawnPoint")
+	UpdateVisuals()
+
+	-- Only notify if it's a new respawn point (ignores initial data load)
+	if currentRespawn and currentRespawn ~= lastRespawn then
+		lastRespawn = currentRespawn
+		CreateNotification("Respawn Point Set", "Your respawn point has been set to " .. currentRespawn .. ".", 12900311398)
+	end
+end)
+
+-- Initial update
+UpdateVisuals()

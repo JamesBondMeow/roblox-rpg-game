@@ -42,9 +42,9 @@ local LastDied = {}
 local Spawners = GameConfig.Spawners
 
 --> Configuration
-local SPAWNED_BOSS_MESSAGE	= "%s has spawned!"
-local DESPAWNED_BOSS_MESSAGE = "%s has despawned."
-local DIED_BOSS_MESSAGE = "%s has died."
+local SPAWNED_BOSS_MESSAGE	= "%s has spawned in %s!"
+local DESPAWNED_BOSS_MESSAGE = "%s has despawned!"
+local DIED_BOSS_MESSAGE = "%s has been slain! %s did the most damage (%s)!"
 
 --------------------------------------------------------------------------------
 
@@ -67,36 +67,36 @@ end
 
 local function UpdateRespawnUI(Name, Duration, Color, Position)
 	local Start = os.clock()
-	
+
 	local RespawnPart = (RespawnTimers[Name] and RespawnTimers[Name]) 
 		or ServerStorage.Assets.Scripts.RespawnGui:Clone()
-	
+
 	RespawnPart.Parent = workspace:FindFirstChild("Map") 
 		or workspace
-	
+
 	RespawnPart.Name = Name
 	RespawnPart:PivotTo(CFrame.new(Position))
-	
+
 	local BillboardGui = RespawnPart:WaitForChild("BossBillboard")
 	BillboardGui.Canvas.Marker.Fill.ImageColor3 = Color
 	BillboardGui.Canvas.Timer.TextColor3 = Color
-	
+
 	task.spawn(function()
 		while os.clock() - Start <= Duration do
 			local TimeLeft = Duration - (os.clock() - Start)
-			
-			
+
+
 			BillboardGui.Canvas.Timer.Text = FormatNumberToTime(math.floor(TimeLeft))
-			
+
 			task.wait(1)
 		end
 	end)
-	
+
 	task.delay(Duration, function()
 		BillboardGui.Enabled = false
 	end)
 	BillboardGui.Enabled = true
-	
+
 	RespawnTimers[Name] = RespawnPart
 end
 
@@ -107,7 +107,7 @@ local function RequestDespawnMob(Object, NewMob, Name, Color)
 	if not CurrentlySpawned[Name] or not Object then
 		return
 	end
-	
+
 	local Data = Spawners[Name]
 
 	LastDied[Name] = os.clock()
@@ -129,7 +129,7 @@ local function SetForDespawn(Despawn, Object, NewMob, Name, Color)
 	task.spawn(function()
 		while true do
 			task.wait(Despawn)
-			
+
 			if not AttributeModule:GetAttribute(NewMob, "Target") then
 				RequestDespawnMob(Object, NewMob, Name, Color)
 				break
@@ -141,20 +141,39 @@ end
 local function AlertSpawnedMobDied(Name, Object, Color)
 	local MobInstance = MobFolder:FindFirstChild(Name)
 	local Data = Spawners[Name]
-	
+
+	-- Calculate Killer
+	local KillerName = "Unknown"
+	local HighestDamage = 0
+
+	if Object and Object.Instance then
+		local PlayerTags = Object.Instance:FindFirstChild("PlayerTags")
+		if PlayerTags then
+			for UserId, Damage in pairs(PlayerTags:GetAttributes()) do
+				if Damage > HighestDamage then
+					local Player = Players:GetPlayerByUserId(tonumber(UserId))
+					if Player then
+						HighestDamage = Damage
+						KillerName = Player.Name
+					end
+				end
+			end
+		end
+	end
+
 	LastDied[Name] = os.clock()
 	CurrentlySpawned[Name] = nil
 	CurrentTimeStamps[Name] = os.clock()
-	
+
 	task.delay(5, function()
 		Object:Destroy()
 	end)
-	
+
 	if MobInstance and Data.Type == "Clock" then
 		UpdateRespawnUI(Name, Data.Time, Color, (Data.Position or MobInstance:GetPivot().Position))
 	end
 
-	AlertChat(Color:Lerp(Color3.fromRGB(255, 255, 255), 0.1), string.format(DIED_BOSS_MESSAGE, Name))
+	AlertChat(Color:Lerp(Color3.fromRGB(255, 255, 255), 0.1), string.format(DIED_BOSS_MESSAGE, Name, KillerName, HighestDamage))
 end
 
 local function RequestSpawnMob(Position, Name, Color, Despawn)
@@ -162,7 +181,7 @@ local function RequestSpawnMob(Position, Name, Color, Despawn)
 	if isActiveSpawn and isActiveSpawn.Parent ~= nil then
 		return
 	end
-	
+
 	if not CurrentlySpawned[Name] then
 		local MobInstance = MobFolder:FindFirstChild(Name)
 		assert(MobInstance, `Requested mob ({Name}) doesn't exist in Assets --> Mobs`)
@@ -170,7 +189,7 @@ local function RequestSpawnMob(Position, Name, Color, Despawn)
 		local NewMob = MobInstance:Clone()
 		NewMob.Parent = workspace:WaitForChild("Mobs")
 		ActiveMobSpawn[Name] = NewMob
-		
+
 		if Position then
 			NewMob:WaitForChild("HumanoidRootPart"):PivotTo(CFrame.new(Position) * NewMob:GetPivot().Rotation)
 		end
@@ -186,16 +205,19 @@ local function RequestSpawnMob(Position, Name, Color, Despawn)
 				AlertSpawnedMobDied(Name, Object, Color)
 			end)
 		end
-		
+
 		CurrentlySpawned[Name] = true
-		
+
 		CollectionService:AddTag(NewMob, "Mob")
 		AttributeModule:SetAttribute(NewMob, "NoRespawn", true)
-		
+
+		-- Get Location from Config
+		local LocationName = (Object.Config and Object.Config.Location) or "???"
+
 		if GameConfig.EnabledFeatures.SpawnedBossUI then
-			EventModule:FireAllClients("InformSpawnedBoss", Color, string.format(SPAWNED_BOSS_MESSAGE, Name))
+			EventModule:FireAllClients("InformSpawnedBoss", Color, string.format(SPAWNED_BOSS_MESSAGE, Name, LocationName))
 		end
-		AlertChat(Color, string.format(SPAWNED_BOSS_MESSAGE, Name))
+		AlertChat(Color, string.format(SPAWNED_BOSS_MESSAGE, Name, LocationName))
 	end
 end
 
@@ -207,7 +229,7 @@ local DataTypeCallbacks = {} do
 		if not TimeStamp then
 			CurrentTimeStamps[Name] = os.clock()
 		end
-		
+
 		local RequestLastDied = LastDied[Name]
 		if TimeStamp and (os.clock() - TimeStamp >= Data.Time) and (not RequestLastDied or os.clock() - RequestLastDied >= Data.Time) then
 			CurrentTimeStamps[Name] = os.clock()

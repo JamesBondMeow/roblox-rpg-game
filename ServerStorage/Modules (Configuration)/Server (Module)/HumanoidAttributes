@@ -39,6 +39,7 @@
 
 --> Services
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ContentLibrary = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Shared"):WaitForChild("ContentLibrary"))
 local Players = game:GetService("Players")
 
 --> Dependencies
@@ -62,6 +63,69 @@ export type HumanoidAttributes = {
 	Humanoid: Humanoid,
 	Update: (self: HumanoidAttributes) -> ()
 }
+
+local function GetToolEnchantmentProps(Tool, TargetFamily)
+	if not Tool then return nil end
+	local enchantAttr = Tool:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return nil end
+
+	local enchants = string.split(enchantAttr, ",")
+	for _, enchantId in ipairs(enchants) do
+		local config = ContentLibrary.Material[enchantId]
+		if not config then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					config = matData
+					break
+				end
+			end
+		end
+		if config and config.Config.EnchantmentData then
+			local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+			if family == TargetFamily then
+				return config.Config.EnchantmentData.Properties or {}
+			end
+		end
+	end
+	return nil
+end
+
+local function GetArmorEnchantmentProps(Player, TargetFamily)
+	local pData = ReplicatedStorage:WaitForChild("PlayerData"):FindFirstChild(Player.UserId)
+	local ActiveArmor = pData and pData:FindFirstChild("ActiveArmor")
+	if not ActiveArmor then return nil, 0 end
+
+	local combinedProps = nil
+	local stacks = 0
+
+	for _, slot in ipairs({"Helmet", "Pauldron", "Chestplate"}) do
+		local armorStr = ActiveArmor[slot].Value
+		if armorStr ~= "" and string.find(armorStr, "|") then
+			local split = string.split(armorStr, "|")
+			for i = 2, #split do
+				local enchantId = split[i]
+				local config = ContentLibrary.Material[enchantId]
+				if not config then
+					for _, matData in pairs(ContentLibrary.Material) do
+						if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+							config = matData
+							break
+						end
+					end
+				end
+
+				if config and config.Config.EnchantmentData then
+					local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+					if family == TargetFamily then
+						combinedProps = combinedProps or config.Config.EnchantmentData.Properties or {}
+						stacks += 1
+					end
+				end
+			end
+		end
+	end
+	return combinedProps, stacks
+end
 
 ----------------------------------------------------------------------------
 
@@ -92,9 +156,30 @@ function HumanoidAttributes.new(Humanoid: Humanoid): HumanoidAttributes
 	
 	self.Instance = Configuration
 	self.Humanoid = Humanoid
-	
+
 	Humanoid.UseJumpPower = true
-	
+
+	-- Listeners for Tool Curses (David & Parasite)
+	local Character = Humanoid.Parent
+	if Character then
+		Character.ChildAdded:Connect(function(child)
+			if child:IsA("Tool") then
+				self:Update()
+				-- Clamp health immediately when equipping David
+				task.defer(function()
+					if self.Humanoid and self.Humanoid.Health > self.Humanoid.MaxHealth then
+						self.Humanoid.Health = self.Humanoid.MaxHealth
+					end
+				end)
+			end
+		end)
+		Character.ChildRemoved:Connect(function(child)
+			if child:IsA("Tool") then
+				self:Update()
+			end
+		end)
+	end
+
 	self:Update()
 	self:StepRegenerate()
 	return self
@@ -109,13 +194,50 @@ function HumanoidAttributes:Update()
 					n += Value
 				end
 			end
-			
+
+			if SubConfig.Name == "Health" and self.Humanoid.Parent then
+				local multiplier = 1
+
+				-- Apply Armor Modifiers Natively (Vitality & Goliath)
+				if self.Player then
+					local vitalityProps, vitalityStacks = GetArmorEnchantmentProps(self.Player, "Vitality")
+					if vitalityStacks > 0 then
+						multiplier += ((vitalityProps and vitalityProps.HealthIncrease or 0.10) * vitalityStacks)
+					end
+
+					local goliathProps, goliathStacks = GetArmorEnchantmentProps(self.Player, "Goliath")
+					if goliathStacks > 0 then
+						multiplier += ((goliathProps and goliathProps.HealthMultiplier or 0.50) * goliathStacks)
+					end
+				end
+
+				-- Apply multipliers to the total health pool
+				n = math.round(n * multiplier)
+
+				-- Apply David MaxHealth Cap natively on the Server (Applies last to halve the final pool)
+				local Tool = self.Humanoid.Parent:FindFirstChildWhichIsA("Tool")
+				local davidProps = GetToolEnchantmentProps(Tool, "David")
+				if davidProps then
+					n = math.round(n * (davidProps.HealthCap or 0.5))
+				end
+			end
+
 			local PropertyName = (SubConfig.Name == "Health" and "MaxHealth") or SubConfig.Name
 			local Percent = SubConfig.Name == "Health" and (self.Humanoid.Health/self.Humanoid.MaxHealth)
-			
+
 			self.Humanoid[PropertyName] = n
-			if Percent == 1 and GameConfig.HumanoidStatsRefreshWhenAdded then
-				self.Humanoid.Health = self.Humanoid.MaxHealth
+
+			-- Force health to instantly clamp if Maximum Health shrinks below Current Health
+			if SubConfig.Name == "Health" then
+				if Percent == 1 and GameConfig.HumanoidStatsRefreshWhenAdded then
+					self.Humanoid.Health = self.Humanoid.MaxHealth
+				end
+
+				task.defer(function()
+					if self.Humanoid and self.Humanoid.Health > self.Humanoid.MaxHealth then
+						self.Humanoid.Health = self.Humanoid.MaxHealth
+					end
+				end)
 			end
 		end
 	end
@@ -123,21 +245,36 @@ end
 
 function HumanoidAttributes:StepRegenerate()
 	task.spawn(function()
+		local parasiteTimer = 0
+
 		while self and self.Humanoid.Parent ~= nil do
-			while self.Humanoid.Health < self.Humanoid.MaxHealth do
-				local DeltaTime = task.wait(RegenerateStep)
-				
+			local DeltaTime = task.wait(RegenerateStep)
+
+			-- 1. Standard Regeneration (Always active, allowing players to out-heal the curse)
+			if self.Humanoid.Health < self.Humanoid.MaxHealth then
 				local DeltaHealth = DeltaTime * RegenerateRate * self.Humanoid.MaxHealth
-				for _, Callback in RegenerationModifiers do
-					DeltaHealth = Callback(self, DeltaHealth)
-				end
-				
-				if self.Humanoid.Health > 0 then
-					self.Humanoid.Health = math.min(self.Humanoid.Health + DeltaHealth, self.Humanoid.MaxHealth)
-				end
+				self.Humanoid.Health = math.clamp(self.Humanoid.Health + DeltaHealth, 0, self.Humanoid.MaxHealth)
 			end
-			
-			self.Humanoid.HealthChanged:Wait()
+
+			-- 2. Parasite Drain (Only drains once per second)
+			local Tool = self.Humanoid.Parent:FindFirstChildWhichIsA("Tool")
+			local parasiteProps = GetToolEnchantmentProps(Tool, "Parasite")
+
+			if parasiteProps then
+				parasiteTimer += DeltaTime
+
+				if parasiteTimer >= 1 then
+					parasiteTimer -= 1 -- Keep perfect 1-second timing
+
+					if self.Humanoid.Health > 1 then
+						local drain = self.Humanoid.MaxHealth * (parasiteProps.HealthDrain or 0.01)
+						self.Humanoid.Health = math.max(1, self.Humanoid.Health - drain)
+					end
+				end
+			else
+				-- Reset the timer if the weapon is unequipped
+				parasiteTimer = 0 
+			end
 		end
 	end)
 end

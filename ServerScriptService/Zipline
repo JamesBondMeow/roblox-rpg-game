@@ -1,0 +1,226 @@
+--[[ 
+* Within the Ziplines model you can place child models that represent individual ziplines.
+	* Each individual zipline should include have a part named "Start" and "Finish" as their descendent representing their namesake. 
+	  These parts should have attachments named "Attachment" as their children. These parts should also be have 
+	  The parts should be CanCollide = false and be sizeable enough that the player can touch then b/c they will trigger usage of the zipline.
+	* These models may have the following objects added for greater control:
+		* BothWays [BoolValue] -> Set this to true if you want to allow the player to ride the zipline both ways. If 
+		  non-existent defaults to false.
+		* Speed [NumberValue] -> Set the value of this to what speed the zipline should travel at. If the speed values doesn't exist or it's
+		  set to zero then it will be calculated based on angle of descent.
+--]]
+
+local TweenService = game:GetService("TweenService")
+local slider = script:WaitForChild("Slider")
+local ziplines = game.Workspace:WaitForChild("Ziplines"):GetChildren()
+
+-- private functions
+local function copyJoint(joint)
+	local fake = Instance.new("Weld")
+	fake.Part0 = joint.Part0
+	fake.Part1 = joint.Part1
+	fake.C0 = joint.C0
+	fake.C1 = joint.C1
+	fake.Name = joint.Name .. "_Fake"
+	return fake
+end
+
+-- zip class
+
+local zip = {}
+local zip_mt = {__index = zip}
+local zip_ref = setmetatable({}, {__mode = "k"})
+
+function zip.new(character)
+	local self = {}
+
+	self.isRiding = false
+
+	self.slider = slider:Clone()
+	self.slider.Anchored = true 
+
+	self.attachS = self.slider:WaitForChild("Attachment")
+	self.ropeR = self.slider:WaitForChild("RopeConstraintR")
+	self.ropeL = self.slider:WaitForChild("RopeConstraintL")
+	self.weld = self.slider:WaitForChild("WeldConstraint")
+
+	self.hrp = character:WaitForChild("HumanoidRootPart")
+	self.humanoid = character:WaitForChild("Humanoid")
+
+	local right, left
+	if (self.humanoid.RigType == Enum.HumanoidRigType.R15) then
+		self.torso = character:WaitForChild("UpperTorso")
+		right = character:WaitForChild("RightHand")
+		left = character:WaitForChild("LeftHand")
+
+		local rShoulder = character:WaitForChild("RightUpperArm"):WaitForChild("RightShoulder")
+		local lShoulder = character:WaitForChild("LeftUpperArm"):WaitForChild("LeftShoulder")
+		local rElbow = character:WaitForChild("RightLowerArm"):WaitForChild("RightElbow")
+		local lElbow = character:WaitForChild("LeftLowerArm"):WaitForChild("LeftElbow")
+
+		if not (rShoulder.Part0 or lShoulder.Part0) then
+			repeat task.wait() until (rShoulder.Part0 and lShoulder.Part0)
+		end
+
+		local rShoulderFake = copyJoint(rShoulder)
+		local lShoulderFake = copyJoint(lShoulder)
+		local rElbowFake = copyJoint(rElbow)
+		local lElbowFake = copyJoint(lElbow)
+
+		rShoulderFake.C0 = rShoulder.C0 * CFrame.fromEulerAnglesXYZ(math.pi, 0, math.rad(15))
+		rElbowFake.C0 = rElbow.C0 * CFrame.fromEulerAnglesXYZ(0, 0, -math.rad(10))
+
+		lShoulderFake.C0 = lShoulder.C0 * CFrame.fromEulerAnglesXYZ(math.pi, 0, -math.rad(15))
+		lElbowFake.C0 = lElbow.C0 * CFrame.fromEulerAnglesXYZ(0, 0, math.rad(10))
+
+		zip_ref[self] = {
+			[rShoulder] = rShoulderFake,
+			[lShoulder] = lShoulderFake,
+			[rElbow] = rElbowFake,
+			[lElbow] = lElbowFake,
+		}
+	else
+		self.torso = character:WaitForChild("Torso")
+		right = character:WaitForChild("Right Arm")
+		left = character:WaitForChild("Left Arm")
+
+		local rShoulder = self.torso:WaitForChild("Right Shoulder")
+		local lShoulder = self.torso:WaitForChild("Left Shoulder")
+
+		local rShoulderFake = copyJoint(rShoulder)
+		local lShoulderFake = copyJoint(lShoulder)
+
+		rShoulderFake.C0 = rShoulder.C0 * CFrame.fromEulerAnglesXYZ(0, 0, math.pi)
+		lShoulderFake.C0 = lShoulder.C0 * CFrame.fromEulerAnglesXYZ(0, 0, math.pi)
+
+		zip_ref[self] = {
+			[rShoulder] = rShoulderFake,
+			[lShoulder] = lShoulderFake,
+		}
+	end
+
+	self.rHandAttach = right:WaitForChild("RightGripAttachment")
+	self.lHandAttach = left:WaitForChild("LeftGripAttachment")
+
+	return setmetatable(self, zip_mt)
+end
+
+function zip:poseArms(bool)
+	for real, fake in next, zip_ref[self] do
+		if (bool) then
+			fake.Parent = real.Parent
+			real.Parent = nil
+		else
+			real.Parent = fake.Parent
+			fake.Parent = nil
+		end
+	end
+end
+
+function zip:slide(attachA, attachB, targetSpeed)
+	self.isRiding = true
+
+	local startPos = attachA.WorldPosition
+	local endPos = attachB.WorldPosition
+	local distance = (endPos - startPos).Magnitude
+
+	-- Calculate travel time (Time = Distance / Speed)
+	local speed = targetSpeed or 50
+	if speed <= 0 then speed = 50 end
+	local travelTime = distance / speed
+
+	local oldWalkSpeed = self.humanoid.WalkSpeed
+	self.humanoid.WalkSpeed = 0
+
+	-- forward-facing CFrame for player
+	local baseCFrame = CFrame.new(startPos, endPos)
+
+	-- Orient the slider with the 90-degree turn so its mesh aligns with the rope
+	local lookAtCFrame = baseCFrame * CFrame.Angles(0, math.pi/2, 0)
+	self.slider.CFrame = lookAtCFrame
+
+	-- Disable Humanoid Physics (stops the Humanoid from trying to bounce/step)
+	self.humanoid.PlatformStand = true 
+
+	-- Position HRP exactly 3 studs below BEFORE posing arms
+	-- We use baseCFrame here so the player faces straight ahead, ignoring the slider's 90-degree turn
+	self.hrp.CFrame = baseCFrame * CFrame.new(0, -3, 0)
+
+	self:poseArms(true)
+
+	-- Dynamically set Rope Length to perfectly match the distance
+	-- If the rope is shorter than the actual distance, it violently pulls the player upward
+	self.ropeR.Length = (self.attachS.WorldPosition - self.rHandAttach.WorldPosition).Magnitude
+	self.ropeL.Length = (self.attachS.WorldPosition - self.lHandAttach.WorldPosition).Magnitude
+
+	self.ropeR.Attachment0 = self.attachS
+	self.ropeR.Attachment1 = self.rHandAttach
+	self.ropeL.Attachment0 = self.attachS
+	self.ropeL.Attachment1 = self.lHandAttach
+
+	-- Weld player to the slider
+	self.weld.Part0 = self.slider
+	self.weld.Part1 = self.hrp
+
+	self.slider.Parent = game.Workspace
+
+	-- Use TweenService for perfectly smooth movement
+	local tweenInfo = TweenInfo.new(travelTime, Enum.EasingStyle.Linear)
+	local targetCFrame = CFrame.new(endPos) * lookAtCFrame.Rotation
+
+	local slideTween = TweenService:Create(self.slider, tweenInfo, {CFrame = targetCFrame})
+	slideTween:Play()
+
+	-- Wait for the ride to finish naturally
+	slideTween.Completed:Wait()
+
+	-- Clean up
+	self.weld.Part1 = nil
+	self.slider.Parent = nil
+	self.humanoid.WalkSpeed = oldWalkSpeed
+
+	self:poseArms(false)
+
+	-- Re-enable Humanoid Physics
+	self.humanoid.PlatformStand = false
+	self.humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+
+	task.delay(1.5, function() self.isRiding = false end)
+end
+
+-- connections
+local zips = {}
+game.Players.PlayerAdded:Connect(function(player)
+	player.CharacterAppearanceLoaded:Connect(function(character)
+		zips[player] = zip.new(character)
+	end)
+end)
+
+for i = 1, #ziplines do
+	local speed = ziplines[i]:FindFirstChild("Speed")
+	local bothWays = ziplines[i]:FindFirstChild("BothWays")
+	local start = ziplines[i]:FindFirstChild("Start", true)
+	local finish = ziplines[i]:FindFirstChild("Finish", true)
+
+	local debounce = false
+
+	start.Touched:Connect(function(hit)
+		local player = game.Players:GetPlayerFromCharacter(hit.Parent)
+		if (not debounce and player and zips[player] and not zips[player].isRiding) then
+			debounce = true
+			task.delay(0.1, function() debounce = false end)
+			zips[player]:slide(start.Attachment, finish.Attachment, speed and speed.Value)
+		end
+	end)
+
+	if (bothWays and bothWays.Value) then
+		finish.Touched:Connect(function(hit)
+			local player = game.Players:GetPlayerFromCharacter(hit.Parent)
+			if (not debounce and player and zips[player] and not zips[player].isRiding) then
+				debounce = true
+				task.delay(0.1, function() debounce = false end)
+				zips[player]:slide(finish.Attachment, start.Attachment, speed and speed.Value)
+			end
+		end)
+	end
+end

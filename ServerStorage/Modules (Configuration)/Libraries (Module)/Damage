@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
 
 --> Dependencies
 local Mobs = require(ServerStorage.Modules.Libraries.Mob.MobList)
@@ -23,6 +24,9 @@ local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
 local AttributeModule = require(ReplicatedStorage.Modules.Shared.Attribute)
 local ProductLib = require(ReplicatedStorage.Modules.Shared.Product)
 local GameConfig = require(ReplicatedStorage.GameConfig)
+local EnchantSuite = require(ServerStorage.Modules.Libraries.EnchantSuite)
+
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
 
 --> Variables
 local DamageLib = {}
@@ -42,7 +46,6 @@ local Interactions = {}
 task.spawn(function()
 	while true do
 		Interactions = {}
-
 		task.wait(GameConfig.MaxDamageInteractions[2])
 	end
 end)
@@ -56,7 +59,8 @@ local MOB_MISS_MAX_CHANCE = 85
 -- Utilities
 
 local function GetUserID(Player)
-	local UserId = Player.UserId; if string.find(UserId, "-") then UserId = string.gsub(UserId, "-", "") end
+	local UserId = Player.UserId;
+	if string.find(UserId, "-") then UserId = string.gsub(UserId, "-", "") end
 	return UserId
 end
 
@@ -66,31 +70,146 @@ local function GetPlayerBestDPS(Player)
 	for _, Weapon in Player.Backpack:GetChildren() do
 		table.insert(Weapons, Weapon)
 	end
-	
+
 	local Selected = {}
 	local BestDPS = 0
 	for _, Weapon in Weapons do
 		if Selected[Weapon.Name] then continue end
 		Selected[Weapon.Name] = true
-		
+
 		local ItemConfig = Weapon:FindFirstChild("ItemConfig") and require(Weapon.ItemConfig)
 		if ItemConfig and ItemConfig.Damage then
 			local DPS = if typeof(ItemConfig.Damage) == "table" 
 				then ((ItemConfig.Damage[1] + ItemConfig.Damage[2]) / 2) / ItemConfig.Cooldown 
 				else ItemConfig.Damage / ItemConfig.Cooldown
-			
+
 			if DPS > BestDPS then
 				BestDPS = DPS
 			end
 		end
 	end
-	
+
 	return BestDPS
 end
 
 local function ShareDamageCallback(_Player, Name, Type, Params)
 	EventModule:FireAllClients("ServerToClientCallback", _Player, Name, Type, Params)
 	EventModule:Fire("ServerToServerCallback", _Player, Name, Type, Params)
+end
+
+local function GetToolEnchantmentProps(Tool, TargetFamily)
+	if not Tool then return nil end
+	local enchantAttr = Tool:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return nil end
+
+	local enchants = string.split(enchantAttr, ",")
+	for _, enchantId in ipairs(enchants) do
+		local config = ContentLibrary.Material[enchantId]
+		if not config then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					config = matData
+					break
+				end
+			end
+		end
+		if config and config.Config.EnchantmentData then
+			local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+			if family == TargetFamily then
+				return config.Config.EnchantmentData.Properties
+			end
+		end
+	end
+	return nil
+end
+
+local function GetArmorEnchantmentProps(Player, TargetFamily)
+	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
+	local ActiveArmor = pData and pData:FindFirstChild("ActiveArmor")
+	if not ActiveArmor then return nil, 0, 0 end
+
+	local combinedProps = nil
+	local stacks = 0
+	local omniBoosts = 0
+
+	for _, slot in ipairs({"Helmet", "Pauldron", "Chestplate"}) do
+		local armorStr = ActiveArmor[slot].Value
+		if armorStr ~= "" and string.find(armorStr, "|") then
+			local split = string.split(armorStr, "|")
+			local hasTarget = false
+
+			for i = 2, #split do
+				local enchantId = split[i]
+				local config = ContentLibrary.Material[enchantId]
+				if not config then
+					for _, matData in pairs(ContentLibrary.Material) do
+						if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+							config = matData
+							break
+						end
+					end
+				end
+
+				if config and config.Config.EnchantmentData then
+					local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+					if family == TargetFamily then
+						combinedProps = combinedProps or config.Config.EnchantmentData.Properties or {}
+						hasTarget = true
+						stacks += 1
+					end
+				end
+			end
+
+			-- Check if this specific armor piece also has Omniscience
+			if hasTarget and string.find(armorStr, "Omniscience") then
+				omniBoosts += 1
+			end
+		end
+	end
+
+	-- Returns: Properties, Total Stacks, Stacks on an item with Omniscience
+	return combinedProps, stacks, omniBoosts
+end
+
+local function CreateFloatingText(text, color, instance)
+	if not instance then return end
+	local pivot = instance:GetPivot()
+
+	local part = Instance.new("Part")
+	part.Anchored = true
+	part.CanCollide = false
+	part.Transparency = 1
+	part.CFrame = pivot
+	part.Parent = workspace:FindFirstChild("Fx") or workspace
+
+	local bg = Instance.new("BillboardGui")
+	bg.Size = UDim2.fromOffset(150, 50)
+	bg.StudsOffset = Vector3.new(0, 3, 0)
+	bg.AlwaysOnTop = true
+	bg.Parent = part
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color
+	label.TextScaled = true
+	label.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+	label.Parent = bg
+
+	local uiStroke = Instance.new("UIStroke")
+	uiStroke.Thickness = 2
+	uiStroke.Parent = label
+
+	local endCFrame = part.CFrame * CFrame.new(0, 5, 0)
+	local tweenInfo = TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local tween = TweenService:Create(part, tweenInfo, {CFrame = endCFrame})
+
+	TweenService:Create(label, tweenInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(uiStroke, tweenInfo, {Transparency = 1}):Play()
+
+	tween:Play()
+	Debris:AddItem(part, 1.5)
 end
 
 --------------------------------------------------------------------------------
@@ -100,7 +219,6 @@ local function InteractParry(Player, Mob, Damage)
 	local Character = Player.Character
 	local DidNotInteract = true
 
-	-- Blocking & parrying (honestly this entire system is really messy and idk how to fix that)
 	local Tool = Character:FindFirstChildWhichIsA("Tool")
 	local ItemConfig = Tool and Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig)
 
@@ -109,43 +227,54 @@ local function InteractParry(Player, Mob, Damage)
 
 		local MobPivot = Mob and Mob.Instance:GetPivot().Position
 		local CharacterPivot = Character:GetPivot().Position
+		local IsBlocking = AttributeModule:GetAttribute(Tool, "Blocking")
 
-		local IsBlocking = AttributeModule:GetAttribute(Tool, "Blocking") 
-			or IsReleased and Mob and Mob.Ranged
-
-		if not Mob or IsBlocking then
-			Damage = math.clamp(Damage - (Damage * ItemConfig.BlockAndParry.Absorption), 0, Damage)
-		elseif Mob and IsReleased then
+		if IsReleased then
 			Damage = 0
 
-			local KnockbackValue = ItemConfig.Knockback or ItemConfig.BlockAndParry.Knockback
-			if KnockbackValue then
-				Knockback:Activate(Mob.Instance:FindFirstChild("Torso"), KnockbackValue, CharacterPivot, MobPivot)
-			end
+			if Mob then
+				local KnockbackValue = ItemConfig.Knockback or ItemConfig.BlockAndParry.Knockback
+				if KnockbackValue then
+					Knockback:Activate(Mob.Instance:FindFirstChild("Torso"), KnockbackValue, CharacterPivot, MobPivot)
+				end
 
-			local ParryToMob = ItemConfig.BlockAndParry.ParryToMob
-			if ParryToMob then
-				EventModule:FireAllClients("ForceAnimateMob", Mob.Instance, ParryToMob[math.random(#ParryToMob)])
-			end
+				local ParryToMob = ItemConfig.BlockAndParry.ParryToMob
+				if ParryToMob then
+					EventModule:FireAllClients("ForceAnimateMob", Mob.Instance, ParryToMob[math.random(#ParryToMob)])
+				end
 
-			local StunTime = ItemConfig.BlockAndParry.StunTime
-			if StunTime then
-				RequestStunMob(Mob, StunTime)
-			end
+				local StunTime = ItemConfig.BlockAndParry.StunTime
+				if StunTime then
+					-- Fencer Stun Bonus
+					local fencerProps = GetToolEnchantmentProps(Tool, "Fencer")
+					if fencerProps then
+						StunTime += (fencerProps.BonusStun or 1)
+					end
+					RequestStunMob(Mob, StunTime)
+				end
 
-			DamageLib:DamageMob(Player, Mob, {ClassType = "Melee", Ignore = true, Tool = Tool, Multiplier = ItemConfig.BlockAndParry.Multiplier or true})
-			ShareDamageCallback(Player, Tool.Name, "OnParried", {Tool, Mob.Instance})
+				DamageLib:DamageMob(Player, Mob, {ClassType = "Melee", Ignore = true, Tool = Tool, Multiplier = ItemConfig.BlockAndParry.Multiplier or true})
+				ShareDamageCallback(Player, Tool.Name, "OnParried", {Tool, Mob.Instance})
+			end
+		elseif not Mob or IsBlocking then
+			-- Normal block damage reduction
+			Damage = math.clamp(Damage - (Damage * ItemConfig.BlockAndParry.Absorption), 0, Damage)
 		end
 
 		if not Mob or not Mob.Ranged then
-			AttributeModule:SetAttribute(Tool, "BlockResult", (IsBlocking and "Blocked") or (IsReleased and "Parried"))
-			AttributeModule:SetAttribute(Tool, "Blocking", nil)
+			if IsReleased then
+				AttributeModule:SetAttribute(Tool, "BlockResult", "Parried|" .. os.clock())
+				AttributeModule:SetAttribute(Tool, "Blocking", nil)
+			elseif IsBlocking then
+				AttributeModule:SetAttribute(Tool, "BlockResult", "Blocked|" .. os.clock())
+			end
+
 			AttributeModule:SetAttribute(Tool, "Released", nil)
 		end
 
 		DidNotInteract = not IsReleased and not IsBlocking
 	end
-	
+
 	return Damage, DidNotInteract
 end
 
@@ -153,18 +282,17 @@ function DamageLib.Hurt(Player: Player, Damage: number, Mob)
 	if typeof(Mob) == "Instance" then
 		Mob = Mobs[Mob]
 	end
-	
+
 	if Mob and AttributeModule:GetAttribute(Mob.Instance, "Stunned") then
 		return
 	end
-	
+
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChildWhichIsA("Humanoid") :: Humanoid
 	if not Character then return end
-	
+
 	local pData = ReplicatedStorage:WaitForChild("PlayerData"):WaitForChild(Player.UserId)
-	
-	-- Hardcoded constitution because I genuinely don't know another use case for mobs missing attacks
+
 	local Attributes = pData.Attributes
 	local Constitution = Attributes.Constitution
 	if Constitution.Value > 0 then
@@ -174,8 +302,7 @@ function DamageLib.Hurt(Player: Player, Damage: number, Mob)
 			return false
 		end
 	end
-	
-	-- Defense hardcoding / ported over from Mob
+
 	local RawDefense = 0
 	local Statistics = Humanoid:FindFirstChild("Statistics")
 	for Name, Value in (Statistics and Statistics.Defense:GetAttributes() or {}) do
@@ -188,39 +315,97 @@ function DamageLib.Hurt(Player: Player, Damage: number, Mob)
 	end
 
 	Damage = math.clamp(math.round(Damage - RawDefense), 1, math.huge)
+	
+	-- Aegis (Negate Attack)
+	local aegisProps, aegisStacks, aegisOmni = GetArmorEnchantmentProps(Player, "Aegis")
+	if aegisStacks > 0 then
+		local chance = aegisProps.Chance or 0.05
+		local finalChance = (chance * aegisStacks) + (chance * 1.5 * aegisOmni)
 
-	local Humanoid = Character:FindFirstChild("Humanoid")
-	if not Humanoid 
-		or Character:FindFirstChildWhichIsA("ForceField") 
-		or not Character:FindFirstChild("Torso") 
-		or Character.Torso:FindFirstChildWhichIsA("ForceField") 
-	then
-		return false
+		if Random:NextNumber() <= finalChance then
+			CreateFloatingText("✦ Aegis", Color3.fromRGB(200, 200, 255), Character.PrimaryPart)
+			return false -- Negated
+		end
 	end
 	
+	-- Gambler Curse Modifier (Takes +20% damage per piece)
+	local gamblerProps, gamblerStacks = GetArmorEnchantmentProps(Player, "Gambler")
+	if gamblerStacks > 0 then
+		Damage = Damage * (1 + (0.2 * gamblerStacks)) 
+	end
+
+	local Humanoid = Character:FindFirstChild("Humanoid")
+	if not Humanoid or Character:FindFirstChildWhichIsA("ForceField") or not Character:FindFirstChild("Torso") or Character.Torso:FindFirstChildWhichIsA("ForceField") then
+		return false
+	end
+
 	local NewDamage, DidNotInteract = InteractParry(Player, Mob, Damage)
 	Damage = NewDamage
-	
-	-- Damage handling
+
 	Damage = math.round(Damage)
-	
 	local CanDamage = Damage > 0
 	if CanDamage then
 		Humanoid.Health = math.clamp(Humanoid.Health - Damage, 0, Humanoid.MaxHealth)
+		
+		-- Only apply knockback to the player if they were NOT blocking (DidNotInteract)
+		if Mob and Mob.Instance and DidNotInteract then
+			local charTorso = Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("HumanoidRootPart")
+			if charTorso then
+				Knockback:Activate(charTorso, 7.5, Mob.Instance:GetPivot().Position, Character:GetPivot().Position)
+			end
+		end
+
+		-- Slow the player down and force them out of sprint
+		local walkSpeedConfig = Humanoid:FindFirstChild("Attributes") and Humanoid.Attributes:FindFirstChild("WalkSpeed")
+		if walkSpeedConfig then
+			walkSpeedConfig:SetAttribute("CombatSlow", 0.5)
+			task.delay(3, function()
+				if walkSpeedConfig then
+					walkSpeedConfig:SetAttribute("CombatSlow", nil)
+				end
+			end)
+		end
+
+		-- Force the character's sprint value to false
+		local runningVal = Character:FindFirstChild("Running")
+		if runningVal and runningVal:IsA("BoolValue") then
+			runningVal.Value = false
+		end
+
+		-- Thorns
+		local thornsProps, thornsStacks = GetArmorEnchantmentProps(Player, "Thorns")
+		if thornsStacks > 0 and Mob and not Mob.isDead then
+			local reflectPct = thornsProps.ReflectDamage or 0.15
+			local reflectDmg = math.max(1, math.round(Damage * reflectPct * thornsStacks))
+			
+			-- Track Thorns Reflection Damage
+			DamageLib:TagMobForDamage(Player, Mob, reflectDmg)
+			Mob:TakeDamage(reflectDmg)
+			CreateFloatingText("✦ Thorns", Color3.fromRGB(150, 255, 100), Mob.Instance)
+		end
+
+		-- Medusa
+		local medusaProps, medusaStacks, medusaOmni = GetArmorEnchantmentProps(Player, "Medusa")
+		if medusaStacks > 0 and Mob and not Mob.isDead then
+			local chance = medusaProps.Chance or 0.10
+			local finalChance = (chance * medusaStacks) + (chance * 1.5 * medusaOmni)
+
+			if Random:NextNumber() <= finalChance then
+				local stunTime = medusaProps.StunTime or 0.5
+				RequestStunMob(Mob, stunTime)
+				CreateFloatingText("✦ Medusa", Color3.fromRGB(200, 255, 150), Mob.Instance)
+			end
+		end
 	end
-	
-	if Mob then
-		Mob:RequestCallback("OnHitPlayer", {Player})
-	end
-	
+
+	if Mob then Mob:RequestCallback("OnHitPlayer", {Player}) end
+
 	EventModule:FireClient("MobDamagedPlayer", Player, CanDamage, DidNotInteract)
 end
 
 EventModule:GetOnServerEvent("PlayerDamaged"):Connect(function(Player, Damage, MobInstance)
-	if typeof(Damage) ~= "number" or Damage ~= Damage or Damage < 0 then 
-		return 
-	end
-	
+	if typeof(Damage) ~= "number" or Damage ~= Damage or Damage < 0 then return end
+
 	local CanHighlight = DamageLib.Hurt(Player, Damage, MobInstance)
 	if CanHighlight then
 		EventModule:FireClient("MobDamagedPlayer", Player, nil, Damage, nil, true, true)
@@ -228,7 +413,6 @@ EventModule:GetOnServerEvent("PlayerDamaged"):Connect(function(Player, Damage, M
 end)
 
 --------------------------------------------------------------------------------
-
 local RemoteUsages = {}
 local ParryCooldown = {}
 local ActivateCooldown = {}
@@ -236,66 +420,54 @@ local ActivateCooldown = {}
 task.spawn(function()
 	while true do
 		RemoteUsages = {}
-		
 		task.wait(GameConfig.MaxInputInteractions[2])
 	end
 end)
 
 ---- Parrying / blocking
-
 EventModule:GetOnServerEvent("RequestBlock"):Connect(function(Player: Player, OldTool, Verdict: boolean, CanComplete: boolean)
-	if not RemoteUsages[Player] then 
-		RemoteUsages[Player] = 0 
-	end
-	
+	if not RemoteUsages[Player] then RemoteUsages[Player] = 0 end
 	RemoteUsages[Player] += 1
-	
-	-- Check if the player can block
+
 	local Character = Player.Character
-	
 	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid
 	local Tool = Character and Character:FindFirstChildWhichIsA("Tool")
-	
+
 	if not Tool or RemoteUsages[Player] > GameConfig.MaxInputInteractions[1] then 
 		AttributeModule:SetAttribute(OldTool, "BlockResult", os.clock())
 		AttributeModule:SetAttribute(OldTool, "Blocking", nil)
 		AttributeModule:SetAttribute(OldTool, "Released", nil)
 		return 
 	end
-	
-	if (not Humanoid or Humanoid.Health <= 0) or not Tool:IsDescendantOf(Character) then
-		return
-	end
+
+	if (not Humanoid or Humanoid.Health <= 0) or not Tool:IsDescendantOf(Character) then return end
 
 	local ItemConfig = Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig)
-	if not ItemConfig or not ItemConfig.BlockAndParry then
-		return
-	end
-	
-	-- On activated block:
+	if not ItemConfig or not ItemConfig.BlockAndParry then return end
+
 	AttributeModule:SetAttribute(Tool, "BlockResult", nil)
 
 	if Verdict then
+		-- Set blocking to true, and immediately open the parry window if applicable
 		AttributeModule:SetAttribute(Tool, "Blocking", true)
-	elseif not Verdict then
+
 		if ItemConfig.BlockAndParry.CanParry and CanComplete and not ActivateCooldown[Player] then
 			ActivateCooldown[Player] = true
-
-			AttributeModule:SetAttribute(Tool, "Released", true)
+			AttributeModule:SetAttribute(Tool, "Released", true) -- We still use "Released" as the parry window tag
 
 			task.delay(ItemConfig.BlockAndParry.ParryWindow, function()
-				if not AttributeModule:GetAttribute(Tool, "BlockResult") then
-					AttributeModule:SetAttribute(Tool, "BlockResult", os.clock())
+				-- Close the parry window cleanly
+				if AttributeModule:GetAttribute(Tool, "Released") then
+					AttributeModule:SetAttribute(Tool, "Released", nil)
 				end
-				AttributeModule:SetAttribute(Tool, "Released", nil)
-
 				ActivateCooldown[Player] = false
 			end)
-		elseif not ActivateCooldown[Player] then
-			AttributeModule:SetAttribute(Tool, "BlockResult", os.clock())
 		end
-		
+	elseif not Verdict then
+		AttributeModule:SetAttribute(Tool, "BlockResult", os.clock())
 		AttributeModule:SetAttribute(Tool, "Blocking", nil)
+		AttributeModule:SetAttribute(Tool, "Released", nil)
+		ActivateCooldown[Player] = false
 	end
 end)
 
@@ -303,40 +475,35 @@ end)
 -- Ore / mob damaging
 
 function DamageLib:TagMobForDamage(Player: Player, Mob, Damage: number)
-	if Mob.isDead then
-		return 
-	end
-	
+	if Mob.isDead then return end
+
 	local UserId = GetUserID(Player)
-	
+
 	if Mob.Config.InstantRefreshData and Mob.Config.InstantRefreshData.CanRefresh then
-		local RegenerateTag = Mob.Instance:FindFirstChild("RegenerateTag")
-			or Instance.new("Configuration")
-		
+		local RegenerateTag = Mob.Instance:FindFirstChild("RegenerateTag") or Instance.new("Configuration")
 		RegenerateTag.Name = "RegenerateTag"
 		RegenerateTag.Parent = Mob.Instance
-		
+
 		if RegenerateTag:GetAttribute("Player") == nil or RegenerateTag:GetAttribute("Player") == Player then
 			RegenerateTag:SetAttribute("Clock", os.clock())
 			RegenerateTag:SetAttribute("PlayerID", UserId)
 		end
 	end
-	
+
 	local PlayerTags = Mob.Instance:FindFirstChild("PlayerTags")
 	if not PlayerTags then
 		PlayerTags = Instance.new("Configuration")
 		PlayerTags.Name = "PlayerTags"
 		PlayerTags.Parent = Mob.Instance
 	end
-	
+
 	local ExistingTag = PlayerTags:GetAttribute(tonumber(UserId))
 	PlayerTags:SetAttribute(tonumber(UserId), (ExistingTag or 0) + Damage)
 end
 
--- Sorry for how messy this is: Ignore should be called for serverside, Tool & Modifier same story, modifier is true/num to no knockback, number to * damage
 function DamageLib:DamageMob(Player: Player, Mob, Parameters)
 	Parameters = Parameters or {}
-	
+
 	local NoHitSound = Parameters.NoHitSound 
 	local Multiplier = Parameters.Multiplier
 	local ClassType = Parameters.ClassType
@@ -344,57 +511,49 @@ function DamageLib:DamageMob(Player: Player, Mob, Parameters)
 	local Ignore = Parameters.Ignore 
 	local Dampen = Parameters.Dampen
 	local Tool = Parameters.Tool
-	
+
 	local UserId = GetUserID(Player)
 	local RegenerateTag = Mob.Instance:FindFirstChild("RegenerateTag")
-	
+
 	if Mob.isDead or (Mob.Config.InstantRefreshData and Mob.Config.InstantRefreshData.CanRefresh and RegenerateTag and (RegenerateTag:GetAttribute("PlayerID") ~= UserId and RegenerateTag:GetAttribute("PlayerID") ~= nil)) then
 		return
 	end
-	
-	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
-	local Level = pData and pData:FindFirstChild("Stats") and pData.Stats:FindFirstChild("Level")
-	if not Level or (Level.Value < Mob.Config.Level[2]) then
-		return
-	end
-	
-	-- Make sure the equipped tool can be found, so we can safely grab the damage from it.
-	-- Never pass damage as a number through a remote, as the client can manipulate this data.
+
 	local Character = Player.Character
-	
 	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid
-	if not Humanoid or Humanoid.Health <= 0 then
-		return
-	end
-	
+	if not Humanoid or Humanoid.Health <= 0 then return end
+
 	local Tool = Tool or Character:FindFirstChildOfClass("Tool")
 	local ItemConfig = Tool and Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig)
-	if (not ItemConfig or not ItemConfig.Damage or ItemConfig.WeaponType ~= ClassType) and not Ignore then 
-		return 
-	end
-	
-	-- Damage Cooldown
+	if (not ItemConfig or not ItemConfig.Damage or ItemConfig.WeaponType ~= ClassType) and not Ignore then return end
+
 	local Count = Interactions[Player.UserId]
 	local Default = GameConfig.MaxDamageInteractions[1]
-	if not Ignore and (Count and (Count > Default / ItemConfig.Cooldown)) then
-		return 
+
+	-- Sync Server Cooldown check with Haste
+	local serverCooldown = ItemConfig and ItemConfig.Cooldown
+	if serverCooldown then
+		local hasteProps = GetToolEnchantmentProps(Tool, "Haste")
+		if hasteProps then
+			serverCooldown = serverCooldown * (1 - (hasteProps.CooldownReduction or 0.10))
+		end
 	end
-	
+
+	if not Ignore and ItemConfig and serverCooldown and (Count and (Count > Default / serverCooldown)) then return end
+
 	Interactions[Player.UserId] = (Count and Count + 1) or 1
-	
-	-- Calculate damage & criticals
-	-- *These wouldn't be hardcoded if they were practical
+
 	local ItemSuite = ItemConfig and ItemConfig.Suite and ItemConfig.Suite[2]
 	local CriticalChance = ItemConfig and ItemConfig.CriticalChance or GameConfig.CriticalChance
 	local CriticalDamage = GameConfig.CriticalMultiplier
-	
+
 	if CriticalChance[2] then
 		local UnitCriticalChance = {1, CriticalChance[2] / CriticalChance[1]}
 		for _, Callback in CriticalModifiers do
 			UnitCriticalChance, CriticalDamage = Callback(Player, Tool, UnitCriticalChance, CriticalDamage)
 		end
 	end
-	
+
 	local Proportionate = ItemSuite and ItemSuite.Proportionate
 	local SuiteDamage = ItemSuite and ItemSuite.Damage
 
@@ -403,31 +562,60 @@ function DamageLib:DamageMob(Player: Player, Mob, Parameters)
 		or SuiteDamage
 		or typeof(ItemConfig.Damage) == "table" and Random:NextInteger(unpack(ItemConfig.Damage))
 		or ItemConfig.Damage
+
+	-- Apply Sharpness
+	local SharpnessProps = GetToolEnchantmentProps(Tool, "Sharpness")
+	if SharpnessProps then
+		Damage = Damage * (1 + (SharpnessProps.DamagePercent or 0))
+	end
 	
+	-- Apply Curse Modifiers
+	local DavidProps = GetToolEnchantmentProps(Tool, "David")
+	if DavidProps then Damage = Damage * (1 + (DavidProps.DamagePercent or 1)) end
+
+	local SlothProps = GetToolEnchantmentProps(Tool, "Sloth")
+	if SlothProps then Damage = Damage * (1 + (SlothProps.DamagePercent or 1)) end
+
+	local ParasiteProps = GetToolEnchantmentProps(Tool, "Parasite")
+	if ParasiteProps then Damage = Damage * (1 + (ParasiteProps.DamagePercent or 0.50)) end
+
+	local GreedProps = GetToolEnchantmentProps(Tool, "Greed")
+	if GreedProps then Damage = Damage * (1 - (GreedProps.DamageReduction or 0.25)) end
+
+	-- Check armor for Goliath
+	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
+	local ActiveArmor = pData and pData:FindFirstChild("ActiveArmor")
+	if ActiveArmor then
+		for _, slot in ipairs({"Helmet", "Pauldron", "Chestplate"}) do
+			local armorName = ActiveArmor[slot].Value
+			if string.find(armorName, "Goliath") then
+				Damage = Damage * 0.85
+			end
+		end
+	end
+
 	if Tool then
 		for _, Callback in DamageModifiers do
 			Damage = Callback(Player, Tool, Damage, Mob)
 		end
 	end
-	
+
 	-- Defense negation
 	local ConfigDefensePenetration = ItemConfig and ItemConfig.DefensePenetration
 	local ConfigDefense = Mob.Config.Defense
-	
-	-- The general idea is to convert both of these values to numbers, and subtract from eachother
-	-- *It looks hacky due to implementation for % defenses
+
 	local WeaponCanAdd = ConfigDefensePenetration and ConfigDefensePenetration[2]
 	local WeaponDefense = ConfigDefensePenetration and ConfigDefensePenetration[1]
 	if not WeaponCanAdd then
 		WeaponDefense = WeaponDefense and math.clamp(WeaponDefense, 0, 1)
 	end
-	
+
 	local MobCanAdd = ConfigDefense and ConfigDefense[2]
 	local MobDefense = ConfigDefense and ConfigDefense[1]
 	if not MobCanAdd then
 		MobDefense = MobDefense and math.clamp(MobDefense, 0, 1)
 	end
-	
+
 	local RawMobDefense = (MobCanAdd and MobDefense) or 0
 	local RawWeaponDefense = (WeaponCanAdd and WeaponDefense) or 0
 	if MobDefense and not MobCanAdd then
@@ -438,119 +626,393 @@ function DamageLib:DamageMob(Player: Player, Mob, Parameters)
 		local NegatedWeaponDamage = Damage / DividedMobDefense
 		RawMobDefense = NegatedWeaponDamage
 	end
-	
+
 	RawMobDefense = math.clamp(RawMobDefense - RawWeaponDefense, 0, math.huge)
 	Damage = math.clamp(Damage - RawMobDefense, 1, math.huge)
-	
-	-- Dampen damage (based on ranged piercing)
+
 	if Dampen and Dampen == Dampen then
 		local ClampedDampen = math.clamp(Dampen, 0.1, 1)
 		Damage = Damage * ClampedDampen
 	end
-	
-	-- Critical multiplier
+
 	local Critical = CriticalChance[2] and Random:NextInteger(unpack(CriticalChance)) == CriticalChance[2]
 	if Critical then
 		Damage *= CriticalDamage
 	end
-	
-	-- Damage modifier
+
 	if typeof(Multiplier) == "number" then
 		Damage *= Multiplier
 	end
-	
-	-- Damage cap
+
 	local MaxDamageCap = Mob.Config.MaxDamageCap 
 	if MaxDamageCap then
 		local MaxDamage = math.round(Mob.Config.Health * MaxDamageCap)
 		Damage = math.clamp(Damage, 0, MaxDamage)
 	end
-	
+
+	-- Execute Enchantment
+	local ExecuteProps = GetToolEnchantmentProps(Tool, "Execute")
+	if ExecuteProps then
+		local threshold = ExecuteProps.Threshold or 0.10
+		local mobHum = Mob.Instance:FindFirstChildWhichIsA("Humanoid")
+		if mobHum and (mobHum.Health - Damage) <= (mobHum.MaxHealth * threshold) and (mobHum.Health - Damage) > 0 then
+			Damage = mobHum.Health -- Instant Kill
+
+			-- Check for a custom Execute particle folder and apply it to the mob's limbs
+			local executeFX = ReplicatedStorage.Assets.Effects.Execute
+			if executeFX then
+				for _, limb in ipairs({"Left Leg", "Left Arm", "Right Arm", "Right Leg", "Torso", "Head"}) do
+					local part = Mob.Instance:FindFirstChild(limb)
+					if part then
+						for _, particle in ipairs(executeFX:GetChildren()) do
+							local clone = particle:Clone()
+							clone.Parent = part
+							clone.Enabled = true
+
+							task.delay(1, function()
+								if clone then clone.Enabled = false end
+							end)
+							Debris:AddItem(clone, 3)
+						end
+					end
+				end
+			end
+
+			-- Add the red flash highlight as well
+			local highlight = Instance.new("Highlight")
+			highlight.FillColor = Color3.fromRGB(255, 0, 0)
+			highlight.Parent = Mob.Instance
+			Debris:AddItem(highlight, 0.5)
+			
+			CreateFloatingText("✦ Execute", Color3.fromRGB(255, 0, 0), Mob.Instance)
+		end
+	end
+
 	Damage = math.round(Damage)
-	
-	-- Knockback (honestly idk why you'd use this other than high cooldown items)
+
 	local CharacterPivot = Character:GetPivot().Position
 	local MobPivot = Mob.Instance:GetPivot().Position
-	
-	if not Multiplier and ItemConfig and ItemConfig.Knockback then -- Multiplier is a constant for all parried attacks. Is true if no multiplier in parry config
-		Knockback:Activate(Mob.Instance:FindFirstChild("Torso"), ItemConfig.Knockback, CharacterPivot, MobPivot)
+
+	-- Apply slight knockback to the mob (Defaults to 5 if weapon doesn't specify one)
+	local KnockbackPower = (not Multiplier and ItemConfig and ItemConfig.Knockback) or 3.5
+	local mobTorso = Mob.Instance:FindFirstChild("Torso") or Mob.Instance:FindFirstChild("UpperTorso") or Mob.Instance:FindFirstChild("HumanoidRootPart")
+
+	if mobTorso then
+		Knockback:Activate(mobTorso, KnockbackPower, CharacterPivot, MobPivot)
 	end
-	
+
 	AttributeModule:SetAttribute(Mob.Instance, "HasBeenHit", true)
-	
-	-- Damage handling
+
 	DamageLib:TagMobForDamage(Player, Mob, Damage)
 	
+	-- Scavenger Proc (Mobs)
+	local ScavengerProps = GetToolEnchantmentProps(Tool, "Scavenger")
+	if ScavengerProps then
+		local chance = ScavengerProps.Chance or 0.05
+		if Tool:GetAttribute("Enchantments") and string.find(Tool:GetAttribute("Enchantments"), "Omniscience") then chance *= 1.5 end
+
+		if Random:NextNumber() <= chance then
+			local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
+			local goldStat = pData and pData.Stats:FindFirstChild("Gold")
+			if goldStat then
+				goldStat.Value += (ScavengerProps.Amount or 5)
+				CreateFloatingText("✦ Scavenger", Color3.fromRGB(255, 215, 0), Mob.Instance)
+			end
+		end
+	end
+	
+	-- Guillotine Damage Tracking
+	local deathmark = Mob.Instance:GetAttribute("GuillotineMark")
+	if deathmark then
+		Mob.Instance:SetAttribute("GuillotineDamage", (Mob.Instance:GetAttribute("GuillotineDamage") or 0) + Damage)
+	end
+
 	Mob:TakeDamage(Damage)
-	Mob:RequestCallback("OnHit", {Player})
-	
-	EventModule:FireClient("PlayerDamagedEntity", Player, Mob.Instance, Damage, Critical, ItemConfig, NoHitSound)
-	
+
 	if Tool then
+		local enchantAttr = Tool:GetAttribute("Enchantments")
+		if enchantAttr and enchantAttr ~= "" then
+			local enchants = string.split(enchantAttr, ",")
+			for _, enchantId in ipairs(enchants) do
+				EnchantSuite:OnHit(Player, Mob, Damage, enchantId)
+			end
+		end
+	end
+	
+	-- Hit & Crit VFX 
+	local effectName = Critical and "Crit" or "Hit"
+	local fxPrefab = ReplicatedStorage.Assets.Effects:FindFirstChild(effectName)
+	if fxPrefab then
+		local targetPart = Mob.Instance:FindFirstChild("Torso")
+		if targetPart then
+			for _, particle in ipairs(fxPrefab:GetChildren()) do
+				local clone = particle:Clone()
+				clone.Parent = targetPart
+				clone.Enabled = true
+
+				-- Turn off emission quickly for a burst effect
+				task.delay(0.3, function()
+					if clone then clone.Enabled = false end
+				end)
+				Debris:AddItem(clone, 1)
+			end
+		end
+	end
+
+	Mob:RequestCallback("OnHit", {Player})
+
+	EventModule:FireClient("PlayerDamagedEntity", Player, Mob.Instance, Damage, Critical, ItemConfig, NoHitSound)
+
+	if Tool and ClassType ~= "Orb" then
 		if Critical then
 			ShareDamageCallback(Player, Tool.Name, "OnCritical", {Tool, Mob.Instance})
 		end
-		
 		ShareDamageCallback(Player, Tool.Name, "OnHit", {Tool, Mob.Instance})
 	end
 end
 
 function DamageLib:DamageProp(Player: Player, Prop, Parameters)
 	Parameters = Parameters or {}
-	
+
 	local Damage = Parameters.Damage
 	local Ignore = Parameters.Ignore 
 	local Tool = Parameters.Tool
-	
+	local IgnoreExcavator = Parameters.IgnoreExcavator
+
 	local Character = Player.Character
 	Tool = Tool or Character and Character:FindFirstChildOfClass("Tool")
-	
+
 	if Prop.isDead then return end
-	
-	-- Check if ItemConfig exists & uses eight weapon type
+
 	local ItemConfig = Tool and Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig)
 	if (not ItemConfig or not ItemConfig.Damage or not ItemConfig.ValidPropTypes or not table.find(ItemConfig.ValidPropTypes, Prop.Config.PropType)) and not Ignore then 
 		return 
 	end
-	
-	-- Check if player's level is enough to mine ore
-	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
-	local Level = pData and pData:FindFirstChild("Stats") and pData.Stats:FindFirstChild("Level")
-	if Level and Level.Value < Prop.Config.Level[2] then
-		EventModule:FireClient("PlayerDamagedEntity", Player, Prop.Instance, "Level too low!", GameConfig.WarningColor, ItemConfig.InvalidSFX or GameConfig.InvalidSFX)
-		return
+
+	-- Calculate base damage early so enchantments don't multiply by nil
+	Damage = Damage 
+		or (typeof(ItemConfig.Damage) == "table" and Random:NextInteger(unpack(ItemConfig.Damage)))
+		or ItemConfig.Damage
+
+	-- Sync Server Cooldown check with Haste (Prop Anti-Cheat)
+	local Count = Interactions[Player.UserId]
+	local Default = GameConfig.MaxDamageInteractions[1]
+	local serverCooldown = ItemConfig and ItemConfig.Cooldown
+	if serverCooldown then
+		local hasteProps = GetToolEnchantmentProps(Tool, "Haste")
+		if hasteProps then
+			serverCooldown = serverCooldown * (1 - (hasteProps.CooldownReduction or 0.10))
+		end
 	end
-	
-	if ItemConfig.Tier < Prop.Config.Tier then
+
+	if not Ignore and ItemConfig and serverCooldown and (Count and (Count > Default / serverCooldown)) then return end
+	Interactions[Player.UserId] = (Count and Count + 1) or 1
+
+	-- Cheater Tier Bypass
+	local CheaterProps = GetToolEnchantmentProps(Tool, "Cheater")
+	local TierBoost = CheaterProps and (CheaterProps.TierBoost or 1) or 0
+
+	if (ItemConfig.Tier + TierBoost) < Prop.Config.Tier then
 		EventModule:FireClient("PlayerDamagedEntity", Player, Prop.Instance, "Tier too low!", GameConfig.WarningColor, ItemConfig.InvalidSFX or GameConfig.InvalidSFX)
 		return
 	end
 	
-	-- Calculate damage
+	-- Tempered Enchantment
+	local TemperedProps = GetToolEnchantmentProps(Tool, "Tempered")
+	if TemperedProps then
+		local chance = TemperedProps.Chance or 0.15
+		if Tool:GetAttribute("Enchantments") and string.find(Tool:GetAttribute("Enchantments"), "Omniscience") then chance *= 1.5 end
+
+		if Random:NextNumber() <= chance then
+			Damage = Damage * 2
+			CreateFloatingText("✦ Tempered", Color3.fromRGB(255, 100, 0), Prop.Instance)
+		end
+	end
+
+	-- Excavator AoE Loop
+	if not IgnoreExcavator then
+		local ExcavatorProps = GetToolEnchantmentProps(Tool, "Excavator")
+		if ExcavatorProps then
+			local radius = ExcavatorProps.Radius or 20
+
+			-- Ensure base Damage is calculated before trying to multiply it
+			Damage = Damage 
+				or (typeof(ItemConfig.Damage) == "table" and Random:NextInteger(unpack(ItemConfig.Damage)))
+				or ItemConfig.Damage
+
+			-- Define the AoE damage (Defaults to 100% of original Damage if no percent is set)
+			local aoePct = ExcavatorProps.DamagePercent or 1
+			local aoeDmg = math.max(1, math.round(Damage * aoePct))
+
+			local overlapParams = OverlapParams.new()
+			overlapParams.FilterType = Enum.RaycastFilterType.Include
+
+			local propFolders = {}
+			for _, tagged in ipairs(CollectionService:GetTagged("Prop")) do table.insert(propFolders, tagged) end
+			overlapParams.FilterDescendantsInstances = propFolders
+
+			local hitParts = workspace:GetPartBoundsInRadius(Prop.Instance:GetPivot().Position, radius, overlapParams)
+			local processedProps = { [Prop.Instance] = true }
+
+			for _, part in ipairs(hitParts) do
+				local nearbyPropInstance = part:FindFirstAncestorWhichIsA("Model")
+
+				if nearbyPropInstance and not processedProps[nearbyPropInstance] and CollectionService:HasTag(nearbyPropInstance, "Prop") then
+					processedProps[nearbyPropInstance] = true
+
+					local nearbyProp = Props[nearbyPropInstance]
+
+					-- Ensure the prop is fully loaded and its methods haven't been wiped
+					if nearbyProp and nearbyProp.TakeDamage then
+						nearbyPropInstance:SetAttribute("JustExcavated", true)
+
+						-- Apply AoE damage safely
+						task.spawn(function()
+							-- Double check that it didn't die exactly as the thread yielded
+							if nearbyProp and nearbyProp.TakeDamage then
+								DamageLib:DamageProp(Player, nearbyProp, {
+									Tool = Tool,
+									Damage = aoeDmg,
+									IgnoreExcavator = true
+								})
+							end
+						end)
+
+						task.delay(0.1, function()
+							if nearbyPropInstance then nearbyPropInstance:SetAttribute("JustExcavated", nil) end
+						end)
+					end
+				end
+			end
+		end
+	end
+
+	-- Bless Check (Swaps the node with its Blessed version)
+	local BlessProps = GetToolEnchantmentProps(Tool, "Bless")
+	if BlessProps and not Prop.Instance:GetAttribute("IsBlessed") then
+		if Random:NextNumber() <= (BlessProps.BlessChance or 0.05) then
+			local propType = Prop.Config.PropType
+			local folderName = (propType == "Ore" and "Ores") or (propType == "Plant" and "Plants") or (propType .. "s")
+
+			local typeFolder = ReplicatedStorage.Assets.Props:FindFirstChild(folderName)
+			local blessedFolder = typeFolder and typeFolder:FindFirstChild("Blessed")
+			local blessedPrefab = blessedFolder and blessedFolder:FindFirstChild("Shiny " .. Prop.Instance.Name)
+
+			if blessedPrefab then
+				Prop.Instance:SetAttribute("IsBlessed", true) -- Prevent looping
+
+				local newPropModel = blessedPrefab:Clone()
+				newPropModel:SetAttribute("IsBlessed", true)
+				newPropModel:PivotTo(Prop.Instance:GetPivot())
+
+				task.defer(function()
+					newPropModel.Parent = workspace.Props
+					CollectionService:AddTag(newPropModel, "Prop")
+					Prop:Destroy()
+				end)
+
+				EventModule:FireClient("SendNotification", Player, "Blessed!", "You discovered a Shiny node!", 0)
+				CreateFloatingText("✦ Bless", Color3.fromRGB(255, 255, 255), Prop.Instance)
+				return -- Skip damaging the current prop since it was just replaced!
+			end
+		end
+	end
+
+	-- Reroll Check (Rerolls the prop to another of the SAME TYPE)
+	local RerollProps = GetToolEnchantmentProps(Tool, "Reroll")
+	if RerollProps and not Prop.Instance:GetAttribute("HasRerolled") then
+		if Random:NextNumber() <= (RerollProps.RerollChance or 0.05) then
+			Prop.Instance:SetAttribute("HasRerolled", true)
+
+			local propType = Prop.Config.PropType
+			local folderName = (propType == "Ore" and "Ores") or (propType == "Plant" and "Plants") or (propType .. "s")
+			local typeFolder = ReplicatedStorage.Assets.Props:FindFirstChild(folderName)
+
+			if typeFolder then
+				local availableProps = {}
+
+				-- Loop through the folder and ONLY grab Models (ignores the 'Blessed' / 'Special' folders)
+				for _, child in ipairs(typeFolder:GetChildren()) do 
+					if child:IsA("Model") and child.Name ~= Prop.Instance.Name then
+						table.insert(availableProps, child) 
+					end
+				end
+
+				if #availableProps > 0 then
+					local chosenPrefab = availableProps[Random:NextInteger(1, #availableProps)]
+					local newPropModel = chosenPrefab:Clone()
+					newPropModel:SetAttribute("HasRerolled", true)
+					newPropModel:PivotTo(Prop.Instance:GetPivot())
+
+					task.defer(function()
+						newPropModel.Parent = workspace.Props
+						CollectionService:AddTag(newPropModel, "Prop")
+						Prop:Destroy()
+					end)
+
+					EventModule:FireClient("SendNotification", Player, "Rerolled!", "The node rerolled into " .. chosenPrefab.Name .. "!", 0)
+					CreateFloatingText("✦ Reroll", Color3.fromRGB(0, 255, 127), newPropModel)
+					return -- Skip damaging the current prop since it was just replaced!
+				end
+			end
+		end
+	end
+
+	local currentTime = os.time()
+	if Prop.OwnerUserId and Prop.OwnerUserId ~= Player.UserId then
+		if (currentTime - Prop.LastHitTime) < 10 then
+			EventModule:FireClient("PlayerDamagedEntity", Player, Prop.Instance, "No Stealing!", GameConfig.WarningColor)
+			return 
+		end
+	end
+
+	Prop.OwnerUserId = Player.UserId
+	Prop.LastHitTime = currentTime
+	
+	-- Scavenger Proc (Props)
+	local ScavengerProps = GetToolEnchantmentProps(Tool, "Scavenger")
+	if ScavengerProps then
+		local chance = ScavengerProps.Chance or 0.05
+		if Tool:GetAttribute("Enchantments") and string.find(Tool:GetAttribute("Enchantments"), "Omniscience") then chance *= 1.5 end
+
+		if Random:NextNumber() <= chance then
+			local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
+			local goldStat = pData and pData.Stats:FindFirstChild("Gold") or pData and pData.Stats:FindFirstChild("Coins")
+			if goldStat then
+				goldStat.Value += (ScavengerProps.Amount or 5)
+				CreateFloatingText("✦ Scavenger", Color3.fromRGB(255, 215, 0), Prop.Instance)
+			end
+		end
+	end
+
 	local Damage = Damage 
 		or typeof(ItemConfig.Damage) == "table" and Random:NextInteger(unpack(ItemConfig.Damage))
 		or ItemConfig.Damage
 
+	-- Apply Sharpness
+	local SharpnessProps = GetToolEnchantmentProps(Tool, "Sharpness")
+	if SharpnessProps then
+		Damage = Damage * (1 + (SharpnessProps.DamagePercent or 0))
+	end
+
 	for _, Callback in DamageModifiers do
 		Damage = Callback(Player, Tool, Damage)
 	end
-	
+
 	Damage = math.round(Damage)
 
-	-- Ore tagging
 	local CurrentDamage = Prop.PlayerTags[Player.UserId] or 0
 	Prop.PlayerTags[Player.UserId] = CurrentDamage + Damage
-	
-	-- Render damage & return
+
 	Prop:TakeDamage(Damage)
-	
+
 	EventModule:FireClient("PlayerDamagedEntity", Player, Prop.Instance, Damage, false, ItemConfig, false, Prop.Scale)
 	ShareDamageCallback(Player, Tool.Name, "OnHit", {Tool, Prop.Instance})
 end
 
 function DamageLib.CallDamage(Player, EntityInstance: Model, Dampen: number?, Class)
 	if not EntityInstance or typeof(EntityInstance) ~= "Instance" then return end
-	
+
 	if CollectionService:HasTag(EntityInstance, "Mob") then
 		local Mob = Mobs[EntityInstance]
 		if Mob then
@@ -563,6 +1025,13 @@ function DamageLib.CallDamage(Player, EntityInstance: Model, Dampen: number?, Cl
 		end
 	end
 end
+
+EventModule:GetOnServerEvent("RequestPlayerStun"):Connect(function(Player, StunTime)
+	if type(StunTime) ~= "number" then return end
+	if Player.Character then
+		RequestStunMob(Player.Character, math.clamp(StunTime, 0, 5))
+	end
+end)
 
 EventModule:GetOnServerEvent("DamageEntity"):Connect(DamageLib.CallDamage)
 return DamageLib

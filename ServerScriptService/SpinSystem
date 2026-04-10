@@ -1,0 +1,75 @@
+-- ServerScriptService/SpinSystem.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local SpinEvent = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Spin")
+local RequestFreeSpinEvent = ReplicatedStorage:WaitForChild("Events"):WaitForChild("RequestFreeSpin")
+local SpinModule = require(ReplicatedStorage:WaitForChild("SpinModule"))
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+-- Dependencies
+local GiveItemWithAmount = require(ServerStorage.Modules.Server.giveItemWithAmount)
+
+-- This function handles when a player USES a spin
+local function onSpin(player, spinRewardKey)
+	local pData = PlayerData:FindFirstChild(player.UserId)
+	if not pData then return end
+
+	local spins = pData:FindFirstChild("Spins")
+	local spinTime = pData:FindFirstChild("SpinTime")
+
+	if not spins or spins.Value < 1 then
+		return -- Silently reject if the server sees no spins
+	end
+
+	spins.Value -= 1
+
+	-- The timer for the NEXT free spin starts NOW if spins = 0.
+	if spins.Value == 0 then
+		spinTime.Value = os.time()
+	end
+
+	local rewardInfo = SpinModule.Spin.Rewards[spinRewardKey]
+	if not rewardInfo then return end
+
+	-- Grant the reward
+	local stat = pData.Stats:FindFirstChild(rewardInfo.Reward)
+	if stat then
+		stat.Value += rewardInfo.Amount
+	elseif rewardInfo.ItemType then
+		GiveItemWithAmount(player, rewardInfo.ItemType, rewardInfo.Reward, rewardInfo.Amount)
+	end
+end
+
+-- This function handles when a player REQUESTS their free spin
+local function onFreeSpinRequested(player)
+	local pData = PlayerData:FindFirstChild(player.UserId)
+	if not pData then return end
+
+	local spinTime = pData:WaitForChild("SpinTime")
+	local spins = pData:WaitForChild("Spins")
+
+	-- Server-side validation: Check if enough time has passed and if they have no spins
+	local timeSinceLastEvent = os.time() - spinTime.Value
+	if timeSinceLastEvent >= SpinModule.Spin.SpinTimeForReward and spins.Value < 1 then
+		spins.Value += 1
+	end
+end
+
+-- This function sets the initial timer for new players
+local function onPlayerAdded(player)
+	local pData = PlayerData:WaitForChild(player.UserId)
+	if pData then
+		local spinTime = pData:WaitForChild("SpinTime")
+		-- If player is brand new, their timer starts now, so they get their first free spin after the cooldown.
+		if spinTime.Value == 0 then
+			spinTime.Value = os.time()
+		end
+	end
+end
+
+-- Connect all events
+SpinEvent.OnServerEvent:Connect(onSpin)
+RequestFreeSpinEvent.OnServerEvent:Connect(onFreeSpinRequested)
+Players.PlayerAdded:Connect(onPlayerAdded)

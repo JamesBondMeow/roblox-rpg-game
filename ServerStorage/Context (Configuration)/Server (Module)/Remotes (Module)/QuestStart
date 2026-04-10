@@ -79,21 +79,30 @@ local function RequestStartQuest(Player, QuestName, Ignore)
 			else
 				local Number = Instance.new("NumberValue")
 				Number.Parent = NewFolder
-				Number.Name = Stat[1]
-				Number.Value = 0
+
+				if NewName == "Fetch" then
+					-- Fetch format: {Type, Name, Amount}
+					-- We name the value after the Item Name (Stat[2])
+					Number.Name = Stat[2] 
+					Number.Value = 0 -- Current progress (optional usage, mostly checked dynamically)
+				else
+					-- Standard format: {Name, Amount}
+					Number.Name = Stat[1]
+					Number.Value = 0
+				end
 			end
 		end
-		
+
 		NewFolder.Parent = Folder
 	end
-	
+
 	Folder.Parent = Quests.Active
-	
+
 	return true
 end
 
 function Remotes:ForceStartQuest(Player, QuestName)
-	warn("hello")
+	warn("Forcing Quest Start")
 	local Success, Return = RequestStartQuest(Player, QuestName, true)
 	if Success then
 		EventModule:FireClient("SendNotification", Player, "Quest success!", `You have been given the quest '{QuestName}'.`, 12900311398)
@@ -109,7 +118,7 @@ function Remotes:OnEvent(Player, QuestName)
 	else
 		EventModule:FireClient("SendNotification", Player, "Quest success!", `You have been given the quest '{QuestName}'.`, 12900311398)
 	end
-	
+
 	return Success
 end
 

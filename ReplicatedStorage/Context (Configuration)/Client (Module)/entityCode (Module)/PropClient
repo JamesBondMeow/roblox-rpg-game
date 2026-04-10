@@ -78,7 +78,7 @@ function Props.new(PropInstance: Model)
 	if PropInstance:GetAttribute("Loaded") then
 		return
 	end
-	
+
 	PropInstance:SetAttribute("Loaded", true)
 
 	local PropConfig = require(SafeWait(PropInstance, "PropConfig"))
@@ -94,26 +94,37 @@ function Props.new(PropInstance: Model)
 
 	local Gui = SetupOverheadGui(PropInstance, Hitbox, PropConfig)
 	Gui.Parent = PropInstance
-	
+
 	local Fill = Gui.Canvas.HealthBar.Fill
 	local Meter = Gui.Canvas.HealthBar.Meter
-	
+
 	local PreviousHealth = PropConfig.Health
 	local CurrentTime = os.clock()
 
+	-- Ensure the attribute folder exists before connecting
+	local AttributeFolder = PropInstance:WaitForChild("HeldAttributes", 5)
+	if not AttributeFolder then return end
+
 	local function OnHealthChanged()
+		-- Use the safe get method or default to config
+		local currentHealth = AttributeModule:GetAttribute(PropInstance, "Health") or PropConfig.Health
+		local maxHealth = AttributeModule:GetAttribute(PropInstance, "MaxHealth") or PropConfig.Health
+
 		local Ore = {
-			Health = AttributeModule:GetAttribute(PropInstance, "Health"), 
-			MaxHealth = AttributeModule:GetAttribute(PropInstance, "MaxHealth")
+			Health = currentHealth, 
+			MaxHealth = maxHealth
 		}
-		
+
+		-- Prevent division by zero
+		if Ore.MaxHealth <= 0 then Ore.MaxHealth = 1 end
+
 		local Percent = math.clamp(Ore.Health / Ore.MaxHealth, 0, 1)
 		Tween:Play(Fill, {0.5, "Circular"}, {Size = UDim2.new(Percent, 0, 1, 0)})
 
 		local Health = math.floor(Ore.Health * 10) / 10
 		local MaxHealth = math.floor(Ore.MaxHealth * 10) / 10
 		Gui.Canvas.HealthBar.Display.Text = `{Format(Health, "Suffix")} / {Format(MaxHealth, "Suffix")}`
-		
+
 		-- Meter frame (damage residual)
 		local Alpha = Ore.Health / Ore.MaxHealth
 		if Ore.Health > PreviousHealth then
@@ -129,7 +140,7 @@ function Props.new(PropInstance: Model)
 				end
 			end)
 		end
-		
+
 		-- Hide/show ore UI
 		if GameConfig.HideMobHUDIfHeal then
 			local IsFullyHealed = Ore.Health == Ore.MaxHealth
@@ -141,18 +152,18 @@ function Props.new(PropInstance: Model)
 
 			Gui.Canvas.HealthBar.Visible = not IsFullyHealed
 		end
-		
+
 		-- Death effect
 		local isDead = Ore.Health <= 0
 		if isDead then
 			if not Prop.isDead then
 				Prop:RequestEffect("OnDeath")
 			end
-			
+
 			Prop.isDead = true
 			Tween:Play(Gui.Canvas, {0.5, "Circular"}, {GroupTransparency = 1})
 		end
-		
+
 		-- Hit effect
 		if Ore.Health < PreviousHealth then
 			Prop:RequestEffect("OnHit")
@@ -167,13 +178,20 @@ function Props.new(PropInstance: Model)
 
 		Tween:Play(Fill, {0.5, "Circular"}, {BackgroundColor3 = Goal})
 		Tween:Play(Meter, {0.5, "Circular"}, {BackgroundColor3 = Goal})
-		
+
 		PreviousHealth = Ore.Health
 	end
 
 	Gui.Canvas.HealthBar.Fill.Size = UDim2.new(0, 0, 1, 0)
-	
-	AttributeModule:GetAttributeChanged(PropInstance, "Health"):Connect(OnHealthChanged)
+
+	-- Connect only if we successfully got the attribute signal
+	local healthSignal = AttributeModule:GetAttributeChanged(PropInstance, "Health")
+	if healthSignal then
+		healthSignal:Connect(OnHealthChanged)
+	else
+		warn("PropClient: Failed to get Health attribute signal for " .. PropInstance.Name)
+	end
+
 	OnHealthChanged()
 
 	-- Textlabel color
@@ -181,7 +199,7 @@ function Props.new(PropInstance: Model)
 	if Color then
 		Gui.Canvas.OreName.TextColor3 = Color
 	end
-	
+
 	PropClientList[PropInstance] = Prop
 	return Prop
 end

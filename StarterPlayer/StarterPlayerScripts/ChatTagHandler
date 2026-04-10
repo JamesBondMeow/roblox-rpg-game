@@ -1,0 +1,94 @@
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- Dependencies
+local Titles = require(ReplicatedStorage.Modules.Shared.Titles)
+local ProductLib = require(ReplicatedStorage.Modules.Shared.Product)
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+-- Helper: Convert Color3 to Hex String for Rich Text
+local function toHex(color)
+	return string.format("#%02X%02X%02X", color.R * 255, color.G * 255, color.B * 255)
+end
+
+-- Get Best Tag
+local function getBestTag(player)
+	local bestTag = nil
+	local highestWeight = -1
+
+	-- 1. Check ID-based tags
+	for tagName, userIds in pairs(Titles.SpecialUserIDs) do
+		if table.find(userIds, player.UserId) then
+			local tagData = Titles.Tags[tagName]
+			if tagData and tagData.Weight > highestWeight then
+				bestTag = tagData
+				highestWeight = tagData.Weight
+			end
+		end
+	end
+
+	-- 2. Check Gamepass-based tags
+	local ownedProducts = ProductLib:GetProducts(player)
+	for _, productData in ipairs(ownedProducts) do
+		if productData.Tag then
+			local tagData = Titles.Tags[productData.Tag]
+			if tagData and tagData.Weight > highestWeight then
+				bestTag = tagData
+				highestWeight = tagData.Weight
+			end
+		end
+	end
+
+	return bestTag
+end
+
+-- Get Rank based on Level (Fallback if no special tags are found)
+local function getRankForLevel(level)
+	for _, rankData in ipairs(Titles.Ranks) do
+		if level >= rankData.Level then
+			return rankData
+		end
+	end
+	return nil
+end
+
+-- Main Chat Interceptor
+TextChatService.OnIncomingMessage = function(message)
+	-- Ignore System Messages (Server Drops, Boss Spawns, etc.) completely. 
+	-- If there is no TextSource, it's a system message. Returning nil preserves its original RichText.
+	if not message.TextSource then
+		return nil
+	end
+
+	local player = Players:GetPlayerByUserId(message.TextSource.UserId)
+	if not player then
+		return nil
+	end
+
+	-- 1. Calculate Best Special Tag (VIP, Owner, etc.)
+	local tagData = getBestTag(player)
+	local properties = Instance.new("TextChatMessageProperties")
+
+	-- 2. Apply Special Tag OR Fallback to Level Title
+	if tagData then
+		local tagColorHex = tagData.Color and toHex(tagData.Color) or "#FFFFFF"
+		properties.PrefixText = string.format("<font color='%s'>[%s]</font> %s", tagColorHex, tagData.Text, message.PrefixText)
+	else
+		-- If no special tag is found, find their Level Rank
+		local pData = PlayerData:FindFirstChild(player.UserId)
+		local levelStat = pData and pData:FindFirstChild("Stats") and pData.Stats:FindFirstChild("Level")
+		local level = levelStat and levelStat.Value or 1
+
+		local rankData = getRankForLevel(level)
+		if rankData then
+			local rankColorHex = rankData.Color and toHex(rankData.Color) or "#CCCCCC"
+			properties.PrefixText = string.format("<font color='%s'>[%s]</font> %s", rankColorHex, rankData.Title, message.PrefixText)
+		else
+			-- If absolutely no tags or ranks are found, return nil to leave chat as default
+			return nil
+		end
+	end
+
+	return properties
+end

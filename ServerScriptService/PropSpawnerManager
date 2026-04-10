@@ -1,0 +1,79 @@
+-- ServerScriptService/PropSpawnerManager.lua
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Folder where your prop models are stored
+local PropModels = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Props")
+
+local Spawners = {}
+
+-- Function to pick a random prop from a weighted table
+local function pickRandomProp(spawnTable)
+	local totalWeight = 0
+	for _, entry in ipairs(spawnTable) do
+		totalWeight += entry[2]
+	end
+
+	local randomValue = math.random() * totalWeight
+	local currentWeight = 0
+
+	for _, entry in ipairs(spawnTable) do
+		currentWeight += entry[2]
+		if randomValue <= currentWeight then
+			return entry[1]
+		end
+	end
+	return nil
+end
+
+local function initializeSpawner(spawnerPart)
+	local configModule = spawnerPart:FindFirstChild("SpawnConfig")
+	if not configModule then return end
+
+	local config = require(configModule)
+	local currentProp = nil
+
+	local function spawnProp()
+		if currentProp then return end
+
+		local propName = pickRandomProp(config.SpawnTable)
+		if not propName then return end
+
+		local propTemplate = PropModels:FindFirstChild(propName, true) -- Recursive search
+		if not propTemplate then
+			warn("PropSpawner: Could not find prop model for '" .. propName .. "'")
+			return
+		end
+
+		local newProp = propTemplate:Clone()
+		-- Position the prop at the spawner's location
+		-- We assume the spawner part is the center/bottom of where the prop should be
+		newProp:PivotTo(spawnerPart.CFrame)
+
+		-- Tag it so PropLib picks it up
+		CollectionService:AddTag(newProp, "Prop")
+		newProp.Parent = workspace:FindFirstChild("Props") or workspace
+
+		currentProp = newProp
+
+		-- Listen for the prop being destroyed (handled by PropLib on death)
+		newProp.Destroying:Connect(function()
+			currentProp = nil
+			-- Wait for respawn time
+			task.wait(config.RespawnTime or 15)
+			spawnProp()
+		end)
+	end
+
+	-- Initial spawn
+	spawnProp()
+end
+
+-- Initialize all existing spawners
+for _, spawner in ipairs(CollectionService:GetTagged("PropSpawner")) do
+	task.spawn(initializeSpawner, spawner)
+end
+
+-- Listen for new spawners (e.g., if map streams in)
+CollectionService:GetInstanceAddedSignal("PropSpawner"):Connect(initializeSpawner)

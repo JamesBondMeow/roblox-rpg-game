@@ -1,32 +1,34 @@
 --[[
 	OrbLib
 	
-	Acts similar to ArmorLib & AccesoryLib scripts for a few given differences.
+	Handles server-side logic for orbs, including equipping, unequipping,
+	and the new active targeting and damage system.
 ]]
 
---> Services
+-- Services
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 
---> References
+-- References
 local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
 
---> Dependencies
+-- Dependencies
 local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
 local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
-
 local Morph = require(ServerStorage.Modules.Server.Morph)
 local CreateValue = require(ServerStorage.Modules.Server.createValue)
 local RemoveValue = require(ServerStorage.Modules.Server.removeValue)
-
+local DamageLib = require(ServerStorage.Modules.Libraries.Damage)
+local Mobs = require(ServerStorage.Modules.Libraries.Mob.MobList)
 local GameConfig = require(ReplicatedStorage.GameConfig)
 
---> Variables
+-- Variables
 local Library = script.Name
-
-local Debounce = {}
 local OrbLib = {}
+local Debounce = {}
+local activeOrbLoops = {}
 
 --------------------------------------------------------------------------------
 
@@ -35,21 +37,97 @@ local function RequestCallback(Model, Name, CallbackType, Parameters)
 	EventModule:FireAllClients("ServerToClientEquipmentCallback", Model, Name, CallbackType, Parameters)
 end
 
+-- This function will be the attack loop for a single orb
+local function orbAttackLoop(player, orb, index)
+	local character = player.Character
+	if not character or not character.Parent then return end
+
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	-- Find the nearest mob
+	local nearestMob, nearestDist = nil, GameConfig.OrbAttackRange
+	for _, mobModel in ipairs(CollectionService:GetTagged("Mob")) do
+		local mobRoot = mobModel:FindFirstChild("HumanoidRootPart")
+		if mobRoot then
+			local dist = (rootPart.Position - mobRoot.Position).Magnitude
+			if dist < nearestDist then
+				nearestDist = dist
+				nearestMob = mobModel
+			end
+		end
+	end
+
+	-- If a mob is found, attack it
+	if nearestMob then
+		local mobObject = Mobs[nearestMob]
+		if mobObject and not mobObject.isDead then
+			-- 1. Tell clients to animate the orb moving to the mob
+			EventModule:FireAllClients("AnimateOrbAttack", player, index, nearestMob)
+
+			-- 2. Wait for the "attack time" while dealing damage
+			task.wait(GameConfig.OrbAttackTime or 0.5)
+			DamageLib:DamageMob(player, mobObject, {
+				ClassType = "Orb",
+				Ignore = false, 
+				Tool = orb.Instance
+			})
+
+			-- 3. Tell clients to animate the orb returning
+			EventModule:FireAllClients("AnimateOrbReturn", player, index)
+		end
+	end
+end
+
+-- This function starts the continuous attack loop for an orb
+local function startOrbLoop(player, orb, index)
+	local loopKey = player.UserId .. "_" .. index
+	if activeOrbLoops[loopKey] then return end -- Don't start a new loop if one is already running
+
+	local loopThread = task.spawn(function()
+		while true do
+			-- Check if the player and their character are still valid
+			if not player.Parent or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+				break -- Stop the loop if the player left or their character is gone
+			end
+
+			orbAttackLoop(player, orb, index)
+
+			-- Wait for the cooldown before the next attack
+			task.wait(GameConfig.OrbAttackCooldown or 3)
+		end
+	end)
+
+	activeOrbLoops[loopKey] = loopThread
+end
+
+-- This function stops the attack loop for an orb
+local function stopOrbLoop(player, index)
+	local loopKey = player.UserId .. "_" .. index
+	if activeOrbLoops[loopKey] then
+		task.cancel(activeOrbLoops[loopKey])
+		activeOrbLoops[loopKey] = nil
+	end
+	-- Also tell clients to return the orb in case it was attacking when unequipped
+	EventModule:FireAllClients("AnimateOrbReturn", player, index)
+end
+
+
 function OrbLib:Give(Player: Player, Orb, DontSave, ShopBought, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
+
 	local isItem = typeof(Orb) == "table"
 	if not isItem then
 		warn(`Item {Library} --> {tostring(Orb) or "nil"} doesn't exist as a table, try using ContentLibrary.`)
 		return
 	end
-	
+
 	if pData then
 		local Found = pData.Items[Library]:FindFirstChild(Orb.Name)
-		
+
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Library].IsStackable
 		local CanGive = ((not Found) or IsStackable)
-		
+
 		local CanBuyMultiple = ShopBought == "Force" or (ShopBought and (not Orb.Config.Cost[4]) and IsStackable)
 		if CanGive or CanBuyMultiple then
 			CreateValue(pData, Orb, DontSave, Amount, Library)
@@ -65,11 +143,11 @@ function OrbLib:Trash(Player: Player, Orb, Amount)
 
 	if pData then
 		RemoveValue(pData, Orb, Amount, Library)
-		
+
 		for _, Slot in pData.EquippedOrbs:GetChildren() do
 			if Slot.Value == Orb.Name then
 				OrbLib:UnequipOrb(Player, tonumber(Slot.Name), Slot.Value)
-				
+
 				Slot.Value = ""
 			end
 		end
@@ -80,37 +158,43 @@ end
 
 function OrbLib:EquipOrb(Player: Player, Orb, Index)
 	local Character = Player.Character
-	
+
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
 	local Attributes = Humanoid and Humanoid:WaitForChild("Attributes", 1)
 	if not Attributes or Humanoid.Health <= 0 then return end
-	
+
 	local Key = "Orb" .. tostring(Index)
-	
+
 	-- Humanoid changes
 	Attributes.Health:SetAttribute(Key, Orb.Config.Health)
 	Attributes.WalkSpeed:SetAttribute(Key, Orb.Config.WalkSpeed)
 	Attributes.JumpPower:SetAttribute(Key, Orb.Config.JumpPower)
-	
+
 	if Orb.Config.Mana then
 		local ManaAttributes = Humanoid:WaitForChild("Mana")
 		ManaAttributes.MaxMana:SetAttribute(Key, Orb.Config.Mana)
 	end
-	
+
 	-- Morph changes
 	Morph:AddOrb(Player, Orb, Index)
 	RequestCallback(Orb.Instance, Orb.Name, "OnEquipped", {Player, Orb.Config})
+
+	-- Start the attack loop for this orb
+	startOrbLoop(Player, Orb, Index)
 end
 
 function OrbLib:UnequipOrb(Player: Player, Index, OrbName)
+	-- Stop the attack loop for this orb
+	stopOrbLoop(Player, Index)
+
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
-	
+
 	local Orb = ContentLibrary[Library][OrbName]
 	local Key = "Orb" .. tostring(Index)
-	
+
 	RequestCallback(Orb.Instance, Orb.Name, "OnUnequipped", {Player, Orb.Config})
-	
+
 	-- Humanoid changes
 	local Attributes = Humanoid and Humanoid:FindFirstChild("Attributes")
 	if Attributes then
@@ -118,7 +202,7 @@ function OrbLib:UnequipOrb(Player: Player, Index, OrbName)
 		Attributes.WalkSpeed:SetAttribute(Key, nil)
 		Attributes.JumpPower:SetAttribute(Key, nil)
 	end
-	
+
 	local ManaAttributes = Humanoid and Humanoid:FindFirstChild("Mana")
 	if ManaAttributes then
 		ManaAttributes.MaxMana:SetAttribute(Key, nil)
@@ -168,10 +252,17 @@ end)
 
 local function OnPlayerAdded(Player: Player)
 	local pData = PlayerData:WaitForChild(Player.UserId)
-	
+
+	-- Stop any loops if the character is removed
+	Player.CharacterRemoving:Connect(function()
+		for i=1, GameConfig.EquippedOrbMax do
+			stopOrbLoop(Player, i)
+		end
+	end)
+
 	local function OnCharacterAdded(Character)
 		local EquippedOrbs = pData:WaitForChild("EquippedOrbs")
-		
+
 		local function EquipOrb(Orb, Index)
 			if Player:HasAppearanceLoaded() then
 				OrbLib:EquipOrb(Player, Orb, Index)
@@ -181,7 +272,7 @@ local function OnPlayerAdded(Player: Player)
 				end)
 			end
 		end
-		
+
 		for _, Slot in EquippedOrbs:GetChildren() do
 			local Orb = Slot.Value ~= "" and ContentLibrary[Library][Slot.Value]
 			if Orb then
@@ -189,11 +280,11 @@ local function OnPlayerAdded(Player: Player)
 			end
 		end
 	end
-	
+
 	if Player.Character then
 		OnCharacterAdded(Player.Character)
 	end
-	
+
 	Player.CharacterAdded:Connect(OnCharacterAdded)
 end
 

@@ -149,7 +149,5 @@ EventModule:GetOnServerEvent("PlayerConsumedItem"):Connect(function(Player, Cons
 	
 	ConsumableLib:Commit(Player, Consumable)
 end)
-
--- if you're reading this u deserve to be loved and appreciated u r amazing
 	
 return ConsumableLib

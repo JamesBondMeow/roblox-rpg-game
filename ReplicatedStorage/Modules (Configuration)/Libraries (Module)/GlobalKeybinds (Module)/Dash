@@ -1,0 +1,148 @@
+-- [CLIENT] --> Shared to all clients
+
+--> Services
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+--> Dependencies
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+local AttributeModule = require(ReplicatedStorage.Modules.Shared.Attribute)
+
+--> Configuration
+local GlobalKeybinds = {
+	MakeInputButton = true,
+	CustomText = "Q",
+	Priority = 1,
+	Icon = nil,
+
+	MakeClickSound = false,
+	CanPress = true,
+
+	ActivateCooldownWhenLetGo = false,
+	Cooldown = 1,
+
+	Key = "Q",
+}
+
+GlobalKeybinds.Disabled = false
+
+--> Dash Settings
+local DASH_MANA_COST = 5
+
+--------------------------------------------------------------------------------
+
+function GlobalKeybinds:RequestValidation(Player)
+	local Char = Player.Character
+	if not Char then return false end
+	
+	-- Prevent dashing if the player is currently stunned
+	if AttributeModule:GetAttribute(Char, "Stunned") then
+		return false
+	end
+
+	-- Ensure the player is holding a directional key to dash
+	if not (UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.A) or UIS:IsKeyDown(Enum.KeyCode.S) or UIS:IsKeyDown(Enum.KeyCode.D)) then
+		return false
+	end
+
+	-- Check if the player has enough Mana
+	local Hum = Char:FindFirstChild("Humanoid")
+	if Hum then
+		local ManaFolder = Hum:FindFirstChild("Mana")
+		local ManaObj = ManaFolder and ManaFolder:FindFirstChild("Mana")
+
+		if ManaObj then
+			local CurrentMana = ManaObj:GetAttribute("Default") or 0
+			if CurrentMana < DASH_MANA_COST then
+				return false -- Not enough mana, deny the dash
+			end
+		end
+	end
+
+	return true
+end
+
+function GlobalKeybinds:OnActivated(Player)
+	local Char = Player.Character
+	if not Char then return end
+
+	local HumRP = Char:FindFirstChild("HumanoidRootPart") 
+	local Hum = Char:FindFirstChild("Humanoid")
+	local AnimCore = Hum and Hum:FindFirstChild("Animator")
+
+	if not HumRP or not Hum or not AnimCore then return end
+
+	-- Deduct Mana Locally (For Instant UI Update)
+	local ManaFolder = Hum:FindFirstChild("Mana")
+	local ManaObj = ManaFolder and ManaFolder:FindFirstChild("Mana")
+	if ManaObj then
+		local CurrentMana = ManaObj:GetAttribute("Default") or 0
+		ManaObj:SetAttribute("Default", math.max(0, CurrentMana - DASH_MANA_COST))
+	end
+
+	-- Tell the Server to deduct mana so Regeneration kicks in
+	EventModule:FireServer("PlayerDashedMana", DASH_MANA_COST)
+
+	-- Load Animations
+	local RollFrontAnim = AnimCore:LoadAnimation(script:WaitForChild("RollFront"))
+	local BackRollAnim = AnimCore:LoadAnimation(script:WaitForChild("BackRoll"))
+	local LeftRollAnim = AnimCore:LoadAnimation(script:WaitForChild("RightRoll")) 
+	local RightRollAnim = AnimCore:LoadAnimation(script:WaitForChild("LeftRoll"))
+
+	local dashSound = script:FindFirstChild("Dash")
+
+	local DashingDebounce = true
+
+	-- End the dash loop after 0.25 seconds
+	task.delay(0.25, function()
+		DashingDebounce = false
+	end)
+
+	-- Put the dash movement in a task.spawn so it doesn't yield/freeze the rest of the game
+	task.spawn(function()
+		if UIS:IsKeyDown(Enum.KeyCode.W) then
+			RollFrontAnim:Play()
+			if dashSound then dashSound:Play() end
+
+			repeat
+				HumRP.AssemblyLinearVelocity = HumRP.CFrame.lookVector * 130
+				task.wait(0.1)
+			until DashingDebounce == false
+
+		elseif UIS:IsKeyDown(Enum.KeyCode.S) then
+			BackRollAnim:Play()
+			if dashSound then dashSound:Play() end
+
+			repeat
+				HumRP.AssemblyLinearVelocity = HumRP.CFrame.lookVector * -130
+				task.wait(0.1)
+			until DashingDebounce == false
+
+		elseif UIS:IsKeyDown(Enum.KeyCode.D) then
+			LeftRollAnim:Play()
+			if dashSound then dashSound:Play() end
+
+			repeat
+				HumRP.AssemblyLinearVelocity = HumRP.CFrame.rightVector * 145
+				task.wait(0.1)
+			until DashingDebounce == false
+
+		elseif UIS:IsKeyDown(Enum.KeyCode.A) then
+			RightRollAnim:Play()
+			if dashSound then dashSound:Play() end
+
+			repeat
+				HumRP.AssemblyLinearVelocity = HumRP.CFrame.rightVector * -145
+				task.wait(0.1)
+			until DashingDebounce == false
+		end
+	end)
+end
+
+function GlobalKeybinds:OnLetGo(Player)
+	-- Optional: Runs when the key is released
+end
+
+return GlobalKeybinds

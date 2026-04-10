@@ -8,24 +8,213 @@
 --------------------------------------------------------------------------------
 
 return {
+	-- 2x XP Gamepass
 	{
 		Type = "Gamepass", -- Group, Premium, Gamepass, Badge
-		AssetID = 8264081,
-		
-		Attributes = { -- + number [Additive]
-			["Health"] = 0,
-			["WalkSpeed"] = 0,
-			["JumpPower"] = 0,
-			["Mana"] = 0,
-		},
-		
+		AssetID = 1532347425,
+
+		Attributes = {}, -- + number [Additive]
+
 		Buffs = { -- * (1 + number) [Multiply]
-			["XP"] = 0.25,
-			["Luck"] = 0,
-			["Gold"] = 0,
-			["Damage"] = 0.25,
+			["XP"] = 0.5
 		},
 		
-		Items = {{"Consumable", "Apple"}}, -- {{Type, Name}, ...}
+		Items = {},
+	},
+	
+	-- 2x Damage Gamepass
+	{
+		Type = "Gamepass",
+		AssetID = 1520250624,
+
+		Attributes = {},
+
+		Buffs = {
+			["Damage"] = 0.5
+		},
+
+		Items = {},
+	},
+
+	-- 2x Gold Gamepass
+	{
+		Type = "Gamepass",
+		AssetID = 1520454601,
+		
+		Attributes = {},
+
+		Buffs = {
+			["Gold"] = 0.5
+		},
+		
+		Items = {},
+	},
+	
+	-- 2x Luck Gamepass
+	{
+		Type = "Gamepass",
+		AssetID = 1522122501,
+		
+		Attributes = {},
+
+		Buffs = {
+			["Luck"] = 0.5
+		},
+		
+		Items = {},
+	},
+
+	-- VIP Gamepass
+	{
+		Type = "Gamepass",
+		AssetID = 1520268581,
+		
+		Tag = "VIP",
+		
+		Attributes = {},
+		
+		Buffs = {
+			["XP"] = 0.25,
+			["Luck"] = 0.25,
+			["Gold"] = 0.25,
+		},
+
+		Items = {
+			{"Orb", "VIP Artifact"},
+		},
+	},
+	
+	-- MVP Gamepass
+	{
+		Type = "Gamepass",
+		AssetID = 1532041567,
+
+		Tag = "MVP",
+
+		Attributes = {
+			["WalkSpeed"] = 10,
+			["JumpPower"] = 10,
+		},
+
+		Buffs = {
+			["XP"] = 0.5,
+			["Luck"] = 0.5,
+			["Gold"] = 0.5,
+		},
+
+		Items = {
+			{"Orb", "MVP Artifact"},
+		},
+	},
+	
+	-- Starter Bundle (Only Availble for 24 hours after first login)
+	{
+		Type = "Deal",
+		Name = "Starter Bundle",
+		AssetID = 3526837951,
+
+		Attributes = {},
+
+		Buffs = {},
+
+		Items = {
+			{"Armor", "Bronze Helmet"},
+			{"Armor", "Bronze Chestplate"},
+			{"Armor", "Bronze Pauldrons"},
+			{"Tool", "Bronze Sword"},
+			{"Tool", "Bronze Pickaxe"},
+			{"Orb", "Origin Artifact"},
+			{"Consumable", "[☆1] Health Potion", 3},
+			{"Consumable", "[☆1] Mana Potion", 3},
+			{"Consumable", "[☆1] Strength Potion", 3},
+			{"Consumable", "[☆1] Luck Potion", 3},
+			{"Material", "Upgrade Essence", 20},
+			{"Material", "Magic Essence", 20},
+			{"Material", "[☆1] Essence", 20},
+			{"Material", "[☆1] Veiled Enchant Tome", 3},
+			{"Material", "[☆1] Cleanser", 3},
+		},
+	},
+	
+	-- Gamepass Bundle (All Current & Future Gamepasses In One (Not available if the player already owns a gamepass; Makes all other gamepasses marked as owned))
+	{
+		Type = "Deal",
+		Name = "Gamepass Bundle",
+		AssetID = 3526837746,
+
+		Attributes = {},
+
+		Buffs = {},
+
+		Items = {},
+	},
+	
+	-- Orb Bundle
+	--{
+	--	Type = "Gamepass",
+	--	AssetID = 1542001985,
+
+	--	Attributes = {},
+
+	--	Buffs = {},
+
+	--	Items = {
+	--		{"Material", "Soul Fragment", 25},
+	--		{"Material", "[☆1] Orb Soul", 5},
+	--		{"Material", "[☆2] Orb Soul", 4},
+	--		{"Material", "[☆3] Orb Soul", 3},
+	--		{"Material", "[☆4] Orb Soul", 2},
+	--		{"Material", "[☆5] Orb Soul", 1},
+	--	},
+	--},
+	
+	-- Essence Bundle
+	--{
+	--	Type = "Gamepass",
+	--	AssetID = 1542333902,
+
+	--	Attributes = {},
+
+	--	Buffs = {},
+
+	--	Items = {
+	--		{"Material", "Upgrade Essence", 100},
+	--		{"Material", "Magic Essence", 100},
+	--		{"Material", "[☆1] Essence", 100},
+	--		{"Material", "[☆2] Essence", 50},
+	--		{"Material", "[☆3] Essence", 25},
+	--		{"Material", "[☆4] Essence", 10},
+	--		{"Material", "[☆5] Essence", 5},
+	--	},
+	--},
+
+	-- Group Member Reward
+	{
+		Type = "Group",
+		AssetID = 603760187,
+		
+		Attributes = {},
+
+		Buffs = {
+			["XP"] = 0.1,
+			["Gold"] = 0.1,
+		},
+		
+		Items = {},
+	},
+
+	-- Premium Subscriber Reward
+	{
+		Type = "Premium",
+		AssetID = 0,
+		
+		Attributes = {},
+
+		Buffs = {
+			["XP"] = 0.1,
+			["Gold"] = 0.1,
+		},
+		
+		Items = {},
 	},
 }

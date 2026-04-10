@@ -1,0 +1,79 @@
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+--> References
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+local RemoveItemWithAmount = require(ServerStorage.Modules.Server.removeItemWithAmount)
+local GiveItemWithAmount = require(ServerStorage.Modules.Server.giveItemWithAmount)
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+
+local RNG = Random.new()
+
+--> Variables
+local Remotes = {}
+
+--------------------------------------------------------------------------------
+
+function Remotes:OnEvent(Player, VeiledTomeName) 
+	if not VeiledTomeName then return false, "Invalid argument." end
+
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	if not pData then return false, "Data missing." end
+
+	-- 1. Get Config
+	local BaseName = string.split(VeiledTomeName, "|")[1]
+	local Config = ContentLibrary.Material[BaseName] and ContentLibrary.Material[BaseName].Config
+
+	if not Config or not Config.AvailableEnchantments or #Config.AvailableEnchantments == 0 then
+		return false, "Invalid Veiled Tome."
+	end
+
+	-- 2. Check Gold
+	local Cost = Config.UnveilCost or 0
+	local Stats = pData:FindFirstChild("Stats")
+	local GoldObj = Stats and Stats:FindFirstChild("Gold")
+
+	if Cost > 0 then
+		if not GoldObj or GoldObj.Value < Cost then
+			return false, "Not enough Gold."
+		end
+	end
+
+	-- 3. Check Tome
+	local ContentItem = ContentLibrary.Material[BaseName]
+	if CountTotalCopies(ContentItem, Player) < 1 then
+		return false, "You do not own this tome."
+	end
+
+	-- 4. Deduct Gold & Tome
+	if Cost > 0 then
+		GoldObj.Value -= Cost
+	end
+	RemoveItemWithAmount(Player, "Material", BaseName, 1)
+
+	-- 5. Pick Random Enchantment & Give it instantly
+	local rolledEnchantId = Config.AvailableEnchantments[RNG:NextInteger(1, #Config.AvailableEnchantments)]
+	local rolledItemName = nil
+
+	for matName, matData in pairs(ContentLibrary.Material) do
+		if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == rolledEnchantId then
+			rolledItemName = matName
+			break
+		end
+	end
+
+	if rolledItemName then
+		GiveItemWithAmount(Player, "Material", rolledItemName, 1)
+		EventModule:FireClient("SendNotification", Player, "Unveiling Complete!", `You received a {rolledItemName}!`, Config.IconId or 0, true)
+		return true, "Unveiled successfully!"
+	else
+		return false, "Failed to generate enchantment."
+	end
+end
+
+return Remotes

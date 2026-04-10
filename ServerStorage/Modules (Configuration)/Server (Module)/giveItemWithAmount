@@ -23,15 +23,28 @@ end
 
 --------------------------------------------------------------------------------
 
-return function(Player, ItemType: string, ItemName: string, Amount)
+return function(Player, ItemType: string, CompoundItemName: string, Amount)
 	local pData = PlayerData:FindFirstChild(Player.UserId)
-	local Item = ContentLibrary[ItemType] and ContentLibrary[ItemType][ItemName]
+	if not pData then return end
+
+	-- Parse the compound name to safely get the ContentLibrary data
+	local split = string.split(tostring(CompoundItemName), "|")
+	local baseName = split[1]
+
+	local OriginalItem = ContentLibrary[ItemType] and ContentLibrary[ItemType][baseName]
+	if not OriginalItem then return end
+
+	-- Create a Proxy table! This forces the native Give function to use the enchanted name, 
+	-- while safely falling back to OriginalItem for everything else (like Instance and Config).
+	local Item = setmetatable({
+		Name = CompoundItemName
+	}, {__index = OriginalItem})
 
 	local IsNumberValue = Item.Instance.ClassName == "NumberValue"
 	if IsNumberValue then
 		Libraries[ItemType]:Give(Player, Item, nil, "Force", Amount)
 	elseif not IsNumberValue then
-		for Iteration = 1, Amount do
+		for Iteration = 1, Amount or 1 do
 			Libraries[ItemType]:Give(Player, Item, nil, "Force")
 		end
 	end

@@ -1,0 +1,425 @@
+-- ReplicatedStorage/Context/Client/userInterface/MobIndex.lua
+--[[
+	Controls the Mob Index UI.
+	Reads data from MobIndexConfig and populates the UI.
+]]
+
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+--> Player
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local pData = ReplicatedStorage:WaitForChild("PlayerData"):WaitForChild(Player.UserId)
+local MobKills = pData:WaitForChild("MobKills")
+
+--> Dependencies
+local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
+local MobIndexConfig = require(ReplicatedStorage.Config.MobIndexConfig)
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
+
+-- Folder for mob models to display in ViewportFrame
+local MobModelFolder = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("IndexModels")
+
+--------------------------------------------------------------------------------
+
+return function(Gui)
+	--> References
+	local MainFrame = Gui:WaitForChild("Main")
+	local OpenButton = PlayerGui:WaitForChild("Main"):WaitForChild("BottomRight"):WaitForChild("Bottom"):WaitForChild("Buttons"):WaitForChild("MobIndex")
+	local ExitButton = MainFrame:WaitForChild("ExitButton")
+	local Title = MainFrame:WaitForChild("Title")
+
+	-- Category List (Left)
+	local CategoryScroll = MainFrame.Categories.List
+	local CategoryTemplate = script.CategoryTemplate
+
+	-- Mob Grid (Center)
+	local MobGridFrame = MainFrame.Mobs.List
+	local MobIconTemplate = script.MobTemplate
+	local SearchBar = MainFrame.Mobs.Search
+
+	-- Info Panel (Right)
+	local InfoPanel = MainFrame.InfoPanel
+	local MobInfo = InfoPanel.MobInfo
+	local NoneSelected = InfoPanel.None
+	
+	local Info_Name = MobInfo:WaitForChild("Name")
+	local Info_Location = MobInfo:WaitForChild("Location")
+	local Info_Unlock = MobInfo:WaitForChild("Unlock")
+	local Info_Viewport = MobInfo.ViewportBG.Viewport
+	local Info_StatsFrame = MobInfo.Stats
+	local Info_DropsList = MobInfo.Drops
+	local Info_DropTemplate = script.DropTemplate
+
+	-- Create a viewport camera
+	local viewportCamera = Instance.new("Camera")
+	Info_Viewport.CurrentCamera = viewportCamera
+	viewportCamera.Parent = Info_Viewport
+	
+	local isOpen = false
+	local currentCategoryButton = nil
+	local allMobIcons = {} -- To store all created mob icons {Name = icon}
+	
+	-- Forward-declare functions
+	local populateCategories
+	local selectCategory
+	local displayMobInfo
+	local setIndexOpen
+	local onKillCountChanged
+	local activateCategoryButton
+	local filterMobGrid
+
+	--------------------------------------------------------------------------------
+
+	-- A helper function to create the stat TextLabels dynamically
+	local function createStatLabel(name, value)
+		local label = Instance.new("TextLabel")
+		label.Name = name
+		label.RichText = true
+		label.Text = `<b>{name}:</b> <b>{value}</b>`
+		label.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		label.TextSize = 16
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextStrokeColor3 = Color3.new(0, 0, 0)
+		label.TextStrokeTransparency = 0
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.new(1, 0, 0.1, 0)
+		label.Parent = Info_StatsFrame
+	end
+
+	-- Displays the info for a selected mob
+	displayMobInfo = function(mobData, killCount)
+		Info_Name.Text = mobData.Name
+		Info_Location.Text = "Location: " .. (mobData.Location or "Unknown")
+		Info_Unlock.Text = (killCount == 0) and "Kill this mob to unlock its data." or "Kills: " .. killCount
+
+		-- Clear and create stat labels
+		for _, child in ipairs(Info_StatsFrame:GetChildren()) do
+			if child:IsA("TextLabel") then
+				child:Destroy()
+			end
+		end
+
+		-- Show stats only if discovered
+		if killCount > 0 then
+			createStatLabel("Type", mobData.Type or "???")
+			createStatLabel("Health", mobData.Health or "???")
+			createStatLabel("Damage", mobData.Damage or "???")
+			createStatLabel("Defense", mobData.Defense or "???")
+			createStatLabel("Speed", mobData.Speed or "???")
+			createStatLabel("Race", mobData.Race or "???")
+			MobInfo.ViewportBG.Hidden.Visible = false
+		else
+			Info_Name.Text = "???"
+			MobInfo.ViewportBG.Hidden.Visible = true
+		end
+
+		-- Drops
+		for _, child in ipairs(Info_DropsList:GetChildren()) do
+			if child:IsA("TextLabel") and child ~= Info_DropTemplate then
+				child:Destroy()
+			end
+		end
+
+		local hasDrops = (killCount > 0) and mobData.Drops and #mobData.Drops > 0
+		Info_DropsList.Visible = hasDrops -- Show/Hide the entire list
+
+		if hasDrops then
+			for i, dropData in ipairs(mobData.Drops) do
+				local dropLabel = Info_DropTemplate:Clone()
+				dropLabel.Name = dropData.Name
+				dropLabel.Text = string.format("• %s %s (%s)",
+					dropData.Amount or "1",
+					dropData.Name,
+					dropData.Chance or "???"
+				)
+				dropLabel.Visible = true
+				dropLabel.Parent = Info_DropsList
+			end
+		end
+
+		-- Viewport Model
+		for _, child in ipairs(Info_Viewport:GetChildren()) do
+			if child:IsA("Model") or child:IsA("Camera") then
+				if child ~= viewportCamera then
+					child:Destroy()
+				end
+			end
+		end
+
+		if killCount > 0 and mobData.Model then
+			local modelClone = MobModelFolder:FindFirstChild(mobData.Model, true)
+			if modelClone then
+				modelClone = modelClone:Clone()
+
+				-- Use the ModelCFrame from config, or a default
+				local modelCFrame = mobData.ModelCFrame or CFrame.new(0, -2, -8)
+
+				-- Set the model's position and parent it
+				modelClone:SetPrimaryPartCFrame(modelCFrame)
+				modelClone.Parent = Info_Viewport
+
+				-- Calculate camera distance based on model size
+				local modelSize = modelClone:GetExtentsSize()
+				local maxDimension = math.max(modelSize.X, modelSize.Y, modelSize.Z)
+				if maxDimension == 0 then maxDimension = 5 end -- Add a fallback size
+
+				-- Adjust multiplier to zoom in/out
+				local cameraDistance = maxDimension * 1
+
+				-- Position the camera 'cameraDistance' studs in front of the model's position
+				-- and make it look at the model's position.
+				local cameraPosition = modelCFrame.Position + Vector3.new(0, 0, cameraDistance)
+				viewportCamera.CFrame = CFrame.new(cameraPosition, modelCFrame.Position)
+			end
+		end
+
+		-- Show info, hide "None"
+		MobInfo.Visible = true
+		NoneSelected.Visible = false
+	end
+	
+	-- This function filters the visible mob icons based on the search bar
+	filterMobGrid = function()
+		local searchText = string.lower(SearchBar.Text)
+
+		if #searchText > 0 then
+			-- If searching, hide the "None Selected" panel
+			NoneSelected.Visible = false
+		elseif currentCategoryButton then
+			-- If search is cleared, reset to the "None Selected" view
+			MobInfo.Visible = false
+			NoneSelected.Visible = true
+		end
+
+		for _, icon in ipairs(MobGridFrame:GetChildren()) do
+			if icon:IsA("ImageButton") then
+				-- Make sure icon name matches the search text
+				icon.Visible = string.lower(icon.Name):match(searchText)
+			end
+		end
+	end
+	
+	-- This function handles the logic for selecting a category
+	activateCategoryButton = function(button)
+		if not button then return end
+		local categoryName = button.Name
+
+		selectCategory(categoryName)
+		Title.Text = "Mob Index [" .. categoryName .. "]"
+		currentCategoryButton = button
+
+		-- Handle highlighting
+		for _, btn in ipairs(CategoryScroll:GetChildren()) do
+			if btn:IsA("TextButton") then
+				btn.stroke.Visible = (btn == button)
+			end
+		end
+	end
+
+	-- Populates the center grid with mobs from a category
+	selectCategory = function(categoryName)
+		-- Clear existing grid
+		for _, child in ipairs(MobGridFrame:GetChildren()) do
+			if child:IsA("ImageButton") or child:IsA("Frame") then -- Clear frames too
+				child:Destroy()
+			end
+		end
+		allMobIcons = {} -- Clear cache
+
+		-- Show "None Selected" panel, hide main info panel
+		MobInfo.Visible = false
+		NoneSelected.Visible = true -- Show "None Selected" by default
+
+		local mobsToList = {}
+		if categoryName == "All" then
+			for _, categoryMobs in pairs(MobIndexConfig.Mobs) do
+				for _, mobData in ipairs(categoryMobs) do
+					table.insert(mobsToList, mobData)
+				end
+			end
+		else
+			mobsToList = MobIndexConfig.Mobs[categoryName] or {}
+		end
+
+		for i, mobData in ipairs(mobsToList) do
+			local icon = MobIconTemplate:Clone()
+			icon.Name = mobData.Name
+			allMobIcons[mobData.Name] = icon
+
+			local killCountValue = MobKills:FindFirstChild(mobData.Name)
+			local killCount = (killCountValue and killCountValue.Value) or 0
+			local isDiscovered = killCount > 0
+
+			-- Get the actual button from the template
+			local button = icon:FindFirstChild("Select") or icon
+
+			if isDiscovered then
+				icon.MobName.Text = mobData.Name
+
+				button.Activated:Connect(function()
+					displayMobInfo(mobData, killCount)
+				end)
+
+			else -- Not Discovered
+				icon.MobName.Text = "???"
+
+				button.Activated:Connect(function()
+					displayMobInfo(mobData, 0) -- Pass 0 for killCount
+				end)
+			end
+
+			icon.Visible = true
+			icon.Parent = MobGridFrame
+		end
+
+		-- After populating, apply search filter *without* re-firing the Changed event
+		filterMobGrid()
+	end
+
+	-- Populates the category buttons on the left
+	populateCategories = function()
+		for _, child in ipairs(CategoryScroll:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+
+		local firstCategoryButton = nil
+
+		-- "All" Category
+		local allButton = CategoryTemplate:Clone()
+		allButton.Name = "All"
+		allButton.Title.Text = "All"
+		allButton.Visible = true
+		allButton.Parent = CategoryScroll
+		if not firstCategoryButton then firstCategoryButton = allButton end
+
+		allButton.Activated:Connect(function()
+			activateCategoryButton(allButton)
+		end)
+
+		-- Location Categories
+		for _, categoryName in ipairs(MobIndexConfig.CategoryOrder) do
+			local button = CategoryTemplate:Clone()
+			button.Name = categoryName
+			button.Title.Text = categoryName
+			button.Visible = true
+			button.Parent = CategoryScroll
+			if not firstCategoryButton then firstCategoryButton = button end
+
+			button.Activated:Connect(function()
+				activateCategoryButton(button)
+			end)
+		end
+	end
+
+	-- Toggles the visibility of the MobIndex UI
+	setIndexOpen = function(open)
+		if isOpen == open then return end
+		isOpen = open
+
+		if open then
+			Gui.Enabled = true
+
+			-- Only populate categories if they haven't been created yet
+			if #CategoryScroll:GetChildren() <= 1 then
+				populateCategories()
+			end
+
+			if currentCategoryButton then
+				activateCategoryButton(currentCategoryButton)
+			else
+				-- Default to selecting "All"
+				local allButton = CategoryScroll:FindFirstChild("All")
+				if allButton then 
+					activateCategoryButton(allButton)
+				end
+			end
+			Tween:Play(Gui.Padding, {0.3, "Back", "Out"}, {PaddingTop = UDim.new()})
+		else
+			Tween:Play(Gui.Padding, {0.2, "Back", "In"}, {PaddingTop = UDim.new(0, 50)})
+			Gui.Enabled = false
+		end
+	end
+
+	-- Connect the button to open the shop
+	OpenButton.Activated:Connect(function()
+		setIndexOpen(true)
+	end)
+
+	ExitButton.Activated:Connect(function()
+		setIndexOpen(false)
+	end)
+
+	-- Listen for kill updates to refresh the UI if it's open
+	onKillCountChanged = function(killValue)
+		if Gui.Enabled then
+			local mobIcon = allMobIcons[killValue.Name]
+			if mobIcon and mobIcon.Hidden.Visible then
+				-- This is the first kill! Refresh the current category.
+				if currentCategoryButton then
+					activateCategoryButton(currentCategoryButton) -- Use new helper
+				end
+			elseif mobIcon and MobInfo.Visible and Info_Name.Text == killValue.Name then 
+				-- If we're currently viewing the mob, update the kill count
+				if Info_Unlock then
+					Info_Unlock.Text = (killValue.Value > 0) and "" or "Kill this mob to unlock its data." or "Kills: " .. killValue
+				end
+			end
+		end
+	end
+
+	-- Listen for new kill counters being added
+	MobKills.ChildAdded:Connect(function(killValue)
+		if killValue:IsA("NumberValue") then
+			onKillCountChanged(killValue)
+			killValue.Changed:Connect(function()
+				onKillCountChanged(killValue)
+			end)
+		end
+	end)
+
+	-- Listen for changes to existing kill counters
+	for _, killValue in ipairs(MobKills:GetChildren()) do
+		if killValue:IsA("NumberValue") then
+			killValue.Changed:Connect(function()
+				onKillCountChanged(killValue)
+			end)
+		end
+	end
+
+	-- Connect Search Bar
+	SearchBar.Changed:Connect(function()
+		local searchText = string.lower(SearchBar.Text)
+
+		-- Don't reset the category, just filter the *current* list
+		if #searchText > 0 then
+			NoneSelected.Visible = false -- Hide "None Selected" when searching
+		elseif currentCategoryButton then
+			-- If search is cleared, reset to the category default
+			activateCategoryButton(currentCategoryButton)
+			return
+		end
+
+		for _, icon in ipairs(MobGridFrame:GetChildren()) do
+			if icon:IsA("ImageButton") then
+				icon.Visible = string.lower(icon.Name):match(searchText)
+			end
+		end
+	end)
+
+	-- Initial Setup
+	populateCategories()
+
+	-- Start with UI closed
+	setIndexOpen(false)
+	Gui.Enabled = false
+	MobInfo.Visible = false
+	NoneSelected.Visible = true
+end

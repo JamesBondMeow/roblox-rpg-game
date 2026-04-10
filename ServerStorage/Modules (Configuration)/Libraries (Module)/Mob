@@ -1,8 +1,7 @@
 --[[
 	Mob
 	
-	All serverside code for mobs get ran through here; in most cases, this won't need to be modified
-	Due to how customizable AttackConfig & MobConfig are, but you're able to dive through here if needed
+	All serverside code for mobs get ran through here.
 ]]
 
 --> Services
@@ -85,21 +84,21 @@ end
 
 function MobLib.new(MobInstance: Model): Mobs.Mob
 	local HumanoidRootPart = MobInstance:FindFirstChild("HumanoidRootPart") :: BasePart
-	
+
 	local Enemy = MobInstance:FindFirstChild("Enemy") :: Humanoid
 	local MobConfig = MobInstance:FindFirstChild("MobConfig") and require(MobInstance:FindFirstChild("MobConfig"))
-	
+
 	if not HumanoidRootPart or not Enemy or not MobConfig then
 		error(("MobLib.new: Passed mob '%s' is missing vital components."):format(MobInstance.Name))
 	end
-	
+
 	local AttributeFolder = MobInstance:FindFirstChild("HeldAttributes") 
 		or AttributeModule:CreateAttributeFolder(MobInstance)
 
 	if AttributeModule:GetAttribute(MobInstance, "Loaded") then
 		return 
 	end
-	
+
 	local Mob = setmetatable({}, Mob)
 	Mob.Instance = MobInstance
 	Mob.Config = MobConfig
@@ -110,43 +109,43 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 	Mob.Enemy = Enemy
 	Mob.Hitbox = MobInstance:FindFirstChild("Hitbox")
 	Mob.Origin = HumanoidRootPart:GetPivot()
-	
+
 	Mob.isActive = false
 	Mob.isWandering = false
 	Mob.isGoingBack = false
 	Mob.PathfindId = nil
-	
+
 	Mob.Attributes = AttributeFolder
-	
+
 	-- AI config
 	local AIData = Mob.Config.AIData
 
 	Mob.FollowDistance = AIData and AIData.FollowDistance or 32
 	Mob.WanderRadius = AIData and AIData.WanderRadius or 10
-	
+
 	Mob.aiType = AIData and AIData.Type
 	Mob.canWander = AIData and AIData.CanWander
 	Mob.lookTarget = AIData and AIData.LookAtTarget
-	
+
 	Mob.isDumb = AIData and AIData.Intelligence == "Dumb"
 	Mob.tendencyType = AIData and AIData.Tendency or "Brave"
 	Mob.rangeRadius = AIData and AIData.Range or math.huge
 	Mob.runPercentage = AIData and AIData.Percentage or 0.25
 	Mob.keepDistance = AIData and AIData.KeepDistance or {13, 16}
-	
+
 	local Agent = AIMob:ConstructPathfindingAgent(Mob)
 	Mob.Path = Agent and PathfindingService:CreatePath(Agent)
 	Mob.Agent = Agent
-	
+
 	Mob.Threads = {}
 	Mob.Signals = {}
-	
+
 	Mob:SetupHitboxesAndScripts()
-	
+
 	Mob.CanRegenerate = MobConfig.RegenerateData and MobConfig.RegenerateData.Duration and MobConfig.RegenerateData.Step and MobConfig.RegenerateData.Percentage
-	
+
 	---- Load in pre-clone stuff
-	
+
 	local function SetRandomPivot(Pivot)
 		Pivot = Pivot or MobInstance:GetPivot()
 
@@ -164,12 +163,12 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 
 		return NewPivot
 	end
-	
+
 	-- Randomize models (they share the same scripts as the parent model)
 	if MobConfig.RandomizeAppearance then
 		Mob:RandomizeAppearance()
 	end
-	
+
 	local InitiallyLoaded = AttributeModule:GetAttribute(MobInstance, "InitiallyLoaded")
 	if not InitiallyLoaded then
 		if MobConfig.RespawnRadius and MobConfig.RespawnRadius > 0 then
@@ -178,25 +177,25 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 				if Mob._Copy then
 					AttributeModule:SetAttribute(Mob._Copy, "OriginPivot", NewPivot)
 				end
-				
+
 				AttributeModule:SetAttribute(MobInstance, "OriginPivot", NewPivot)
 			end
 		end
-		
+
 		if Mob._Copy then
 			AttributeModule:SetAttribute(Mob._Copy, "InitiallyLoaded", true)
 		end
-		
+
 		AttributeModule:SetAttribute(MobInstance, "InitiallyLoaded", true)
 	end
-	
+
 	Mob._Copy = Mob._Copy or MobInstance:Clone()
-	
+
 	---- Initialize
-	
+
 	AttributeModule:SetAttribute(MobInstance, "Loaded", true)
-	
-	-- Set pivot of ore if respawned
+
+	-- Set pivot of mob if respawned
 	if InitiallyLoaded then
 		local OriginPivot = AttributeModule:GetAttribute(MobInstance, "OriginPivot")
 		if not MobConfig.KeepPosition and MobConfig.RespawnRadius and MobConfig.RespawnRadius > 0 then
@@ -204,74 +203,74 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 		elseif OriginPivot then
 			MobInstance:PivotTo(OriginPivot)
 		end
-		
+
 		Mob.OriginPivot = OriginPivot or MobInstance:GetPivot()
 	end
-	
+
 	-- Set collision group to mob (done here because _copy can be cloned before setting stuff up)
 	for _, Part in MobInstance:GetDescendants() do
 		if Part:IsA("BasePart") then
 			Part.CollisionGroup = "Mobs"
 		end
 	end
-	
+
 	Enemy.MaxHealth = MobConfig.Health
 	Enemy.Health = MobConfig.Health
 	Enemy.JumpPower = MobConfig.JumpPower
 	HumanoidRootPart.Anchored = true
 	MobInstance.Parent = MobsFolder
-	
+
 	-- We're doing these here because it's after cloning, these won't clone every time the mob respawns
 	if MobConfig.Armor then
 		Morph:ApplyOutfit(MobInstance, ContentLibrary.Armor[MobConfig.Armor])
 	end
-	
+
 	-- Set humanoid states (helps prevent falling down & useless calculations - you're unlikely to have an enemy climbing without pathfinding)
 	for _, EnumName in {"FallingDown", "Seated", "Flying", "Swimming", "Climbing"} do
 		local HumanoidStateType = Enum.HumanoidStateType[EnumName]
 		Enemy:SetStateEnabled(HumanoidStateType, false)
-		
+
 		if Enemy:GetState() == HumanoidStateType then
 			Enemy:ChangeState(Enum.HumanoidStateType.Running)
 		end
 	end
-	
+
 	-- Walkspeed config (for freezing & stun)
 	local WalkSpeed = Instance.new("Configuration")
 	WalkSpeed.Parent = Enemy
 	WalkSpeed.Name = "WalkSpeed"
-	
+
 	local function AttributeChanged()
 		local TotalWalkSpeed = 0
 		for Name, Value in WalkSpeed:GetAttributes() do
 			TotalWalkSpeed += Value
 		end
-		
+
 		Enemy.WalkSpeed = math.clamp(TotalWalkSpeed, 0, 100)
 	end
-	
+
 	WalkSpeed.AttributeChanged:Connect(AttributeChanged)
 	AttributeChanged()
-	
+
 	WalkSpeed:SetAttribute("Default", MobConfig.WalkSpeed)
-	
+
 	function Mob:SetWalkSpeed(Name, Value)
 		return WalkSpeed:SetAttribute(Name, Value)
 	end
-	
+
 	function Mob:RequestJump()
 		local TotalWalkSpeed = 0
 		for Name, Value in WalkSpeed:GetAttributes() do
 			TotalWalkSpeed += Value
 		end
-		
+
 		if TotalWalkSpeed <= 0 then
 			return
 		end
-		
+
 		Enemy.Jump = true
 	end
-	
+
 	-- Respawn delay (freeze mob)
 	local RespawnDelay = (Mob.Config.RespawnDelay and Mob.Config.RespawnDelay[1]) or 0
 	if RespawnDelay > 0 then
@@ -281,42 +280,55 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 
 		Mob:SetWalkSpeed("Respawning", -9999)
 	end
-	
+
 	---- Connections
-	
+
 	local PreviousHealth = Enemy.Health
-	
+
 	local function OnTouchedHitbox(BasePart)
 		if BasePart:IsDescendantOf(Doors) then
 			HumanoidRootPart:PivotTo(Mob.Origin)
 		end
 	end
-	
+
 	local function OnDied()
 		if Mob.isDead then
 			return
 		end
-		
+
 		Mob.isDead = true
-		
+
 		if MobInstance.Parent ~= nil and MobConfig.DeathSound then
 			SFX:Play3D(MobConfig.DeathSound, MobInstance:GetPivot().Position)
 		end
-		
+
 		Mob:AwardDrops()
 		AttributeModule:SetAttribute(MobInstance, "Dead", true)
-		
+
 		ActivateRagdoll(MobInstance)
-		
-		task.delay(MobConfig.RespawnTime or 5, function()
-			if Mob.Respawn then
-				Mob:Respawn()
-			end
-		end)
-		
+
+		-- Check if this mob was created by the Spawner Manager
+		local isManaged = MobInstance:GetAttribute("ManagedSpawn") == true
+
+		local CleanupTime = 5 -- Time for ragdoll to stay before cleaning up
+
+		if isManaged then
+			-- If managed, we destroy it. The Manager Script detects Destroying and handles the respawn timer.
+			task.delay(CleanupTime, function()
+				Mob:Destroy()
+			end)
+		else
+			-- If NOT managed (legacy/manual placement), use internal respawn logic
+			task.delay(MobConfig.RespawnTime or 5, function()
+				if Mob.Respawn then
+					Mob:Respawn()
+				end
+			end)
+		end
+
 		Mob:RequestCallback("OnDied")
 	end
-	
+
 	local function OnMoveToFinished()
 		local DontAnchor = AttributeModule:GetAttribute(MobInstance, "DontAnchor")
 
@@ -328,67 +340,76 @@ function MobLib.new(MobInstance: Model): Mobs.Mob
 			HumanoidRootPart.Anchored = true
 		end
 	end
-	
+
 	local LastHealthChanged = os.clock()
-	
+
 	local function OnHealthChanged()
 		if PreviousHealth > Enemy.Health then
 			local Clock = os.clock()
 			LastHealthChanged = Clock
-			
+
 			-- Regeneration system
 			if Mob.CanRegenerate then
 				task.delay(MobConfig.RegenerateData.Duration, function()
 					if Enemy.Health <= 0 or Clock ~= LastHealthChanged then
 						return
 					end
-					
+
 					while Clock == LastHealthChanged and Enemy.Health ~= Enemy.MaxHealth and Enemy.Health > 0 do
 						local AddedHealth = MobConfig.RegenerateData.Amount 
 							or math.max(math.round(MobConfig.RegenerateData.Percentage * Enemy.MaxHealth), 1)
-						
+
 						Enemy.Health += AddedHealth
 						task.wait(MobConfig.RegenerateData.Step)
 					end
 				end)
 			end
-			
+
 			Mob.AIMob:StartTracking(GameConfig.DefaultDistanceRadius)
 		end
 
 		PreviousHealth = Enemy.Health
 	end
-	
+
 	if Mob.Hitbox then
 		Mob.Hitbox.Touched:Connect(OnTouchedHitbox)
 	end
-	
+
 	AttributeModule:GetAttributeChanged(MobInstance, "NoRespawn"):Connect(function()
 		Mob.NoRespawn = AttributeModule:GetAttribute(MobInstance, "NoRespawn")
 	end)
 	
+	-- Physically freeze the mob's WalkSpeed when stunned
+	AttributeModule:GetAttributeChanged(MobInstance, "Stunned"):Connect(function()
+		if AttributeModule:GetAttribute(MobInstance, "Stunned") then
+			Mob:SetWalkSpeed("Stunned", -9999)
+		else
+			Mob:SetWalkSpeed("Stunned", nil)
+		end
+	end)
+
 	AttributeModule:SetAttribute(MobInstance, "NoKnockback", Mob.Config.NoKnockback)
 	AttributeModule:SetAttribute(MobInstance, "NoStun", Mob.Config.NoStun)
-	
+
 	Enemy.Died:Once(OnDied)
-	
+
 	Enemy.MoveToFinished:Connect(OnMoveToFinished)
 	Enemy.HealthChanged:Connect(OnHealthChanged)
-	
+
 	if MobConfig.InstantRefreshData and MobConfig.InstantRefreshData.CanRefresh then
 		Mob:CheckRegenerateTag()
 	end
-	
+
 	if MobConfig.AttackCycle then
 		Mob:CommitAttackSystem()
 	end
-	
+
 	if MobConfig.HitCycle then
 		Mob:CommitHitCycle()
 	end
-	
+
 	Mobs[MobInstance] = Mob
-	
+
 	Mob.AIMob = AIMob.new(Mob)
 	Mob:RequestCallback("OnSpawned")
 	return Mob
@@ -397,7 +418,7 @@ end
 function Mob:RequestCallback(CallbackType, Parameters)
 	local MobInstance = self.Instance
 	local Name = self.Config.Name
-	
+
 	EventModule:Fire("ServerToServerMobCallback", MobInstance, Name, CallbackType, Parameters)
 	EventModule:FireAllClients("ServerToClientMobCallback", MobInstance, Name, CallbackType, Parameters)
 end
@@ -407,7 +428,7 @@ function Mob:Respawn()
 		local NewMob = self._Copy
 
 		self:Destroy()
-		
+
 		if not self.NoRespawn then
 			NewMob.Parent = MobsFolder
 		else
@@ -427,24 +448,24 @@ function Mob:Destroy()
 	if not self.Destroyed then
 		self.Destroyed = true
 		self.AIMob:Destroy()
-		
+
 		for _, Thread in self.Threads do
 			task.cancel(Thread)
 			Thread = nil
 		end
-		
+
 		for _, Signal in self.Signals do
 			Signal:Destroy()
 			Signal = nil
 		end
-		
+
 		if self.HitboxConnections then
 			for _, Connection in self.HitboxConnections do
 				Connection:Disconnect()
 				Connection = nil
 			end
 		end
-		
+
 		if self.AttackConnection then
 			self.AttackConnection:Disconnect()
 			self.AttackConnection = nil
@@ -453,7 +474,7 @@ function Mob:Destroy()
 		Mobs[self.Instance] = nil
 
 		self.Instance:Destroy()
-		
+
 		-- Remove instance references
 		self.Instance = nil
 		self.Root = nil
@@ -465,23 +486,23 @@ end
 -- genuinely hate how thislooks!
 function Mob:SetupHitboxesAndScripts()
 	local RequestedDefaultLimbs = {"Right Arm", "Left Arm"}
-	
+
 	local MobInstance = self.Instance :: Model
 	local MobConfig = self.Config
-	
+
 	local Tool = MobInstance:FindFirstChildWhichIsA("Tool")
-	
+
 	self.Scripts = {}
 	self.HitboxObjects = {}
-	
+
 	---- Check intially for config hitboxes
-	
+
 	local function RequestCheckObject(Object)
 		local IsBasePart = Object:IsA("BasePart")
-		
+
 		if Object:IsA("BaseScript") or Object:IsA("ModuleScript") then
 			table.insert(self.Scripts, Object)
-			
+
 		elseif 
 			not self.Ranged 
 			and MobConfig.HitboxObjects 
@@ -500,13 +521,13 @@ function Mob:SetupHitboxesAndScripts()
 			end
 		end
 	end
-	
+
 	for _, Object in MobInstance:GetChildren() do
 		RequestCheckObject(Object)
 	end
-	
+
 	---- Check for default config
-	
+
 	local function PrioritizeArms()
 		for _, Limb in RequestedDefaultLimbs do
 			local NewLimb = self.Instance:FindFirstChild(Limb)
@@ -515,7 +536,7 @@ function Mob:SetupHitboxesAndScripts()
 			end
 		end
 	end
-	
+
 	local function PrioritizeTool()
 		for _, Object in Tool:GetDescendants() do
 			if Object:IsA("BasePart") then
@@ -523,7 +544,7 @@ function Mob:SetupHitboxesAndScripts()
 			end
 		end
 	end
-	
+
 	if not self.Ranged and #self.HitboxObjects == 0 then
 		if Tool then
 			PrioritizeTool()
@@ -535,7 +556,7 @@ end
 
 function Mob:RandomizeAppearance()
 	local MobModels = self.Config.RandomizeAppearance
-	
+
 	if self.Config.AddCurrentModelToRandom then
 		if not table.find(MobModels, self.Config.Name) then
 			table.insert(MobModels, self.Config.Name)
@@ -552,7 +573,7 @@ function Mob:RandomizeAppearance()
 	if Alternatives:FindFirstChild(ChosenName) then
 		local NewMobCopy = Alternatives[ChosenName]:Clone()
 		ClearMobInstance(NewMobCopy)
-		
+
 		if not NewMobCopy:FindFirstChildWhichIsA("ModuleScript") then
 			for _, Script in self.Scripts do
 				Script:Clone().Parent = NewMobCopy
@@ -575,15 +596,15 @@ end
 function Mob:CommitHitCycle()
 	local MobInstance = self.Instance
 	local Enemy = MobInstance:FindFirstChild("Enemy") :: Humanoid
-	
+
 	local HitCycle = HitCycleFunctions:GetHitCycle(self)
 	self.HitCycle = HitCycle
-	
+
 	local Cooldown = {}
 	self.HitboxConnections = {}
-	
+
 	---- Callback functions
-	
+
 	local function PlayToolSound(Position)
 		local Tool = MobInstance:FindFirstChildWhichIsA("Tool")
 		if Tool then
@@ -598,34 +619,37 @@ function Mob:CommitHitCycle()
 			end
 		end
 	end
-	
+
 	local function Damage(Player)
+		-- Do not allow the attack to go through if the mob was killed OR stunned during the telegraph
+		if self.isDead or AttributeModule:GetAttribute(MobInstance, "Stunned") then return end 
+
 		table.insert(Cooldown, Player)
 		task.spawn(DamageLib.Hurt, Player, self.Config.Damage, self)
 	end
-	
+
 	local function AttackPlayersInRadius(Position, Radius)
 		for _, Player in Players:GetPlayers() do
 			if table.find(Cooldown, Player) then continue end
-			
+
 			local Character = Player.Character
 			local Torso = Character and Character:FindFirstChild("Torso")
 			if not Torso then continue end
-			
+
 			local Magnitude = (Torso.Position - Position).Magnitude
 			if Magnitude <= Radius then
 				Damage(Player)
 			end
 		end
 	end
-	
+
 	local function OnTouched(Hit)
 		local Player = Players:GetPlayerFromCharacter(Hit.Parent)
 		if Player and not table.find(Cooldown, Player) then
 			Damage(Player)
 		end
 	end
-	
+
 	local function ClearConnections()
 		for _, Connection in self.HitboxConnections do
 			Connection:Disconnect()
@@ -634,21 +658,21 @@ function Mob:CommitHitCycle()
 
 		self.HitboxConnections = {}
 	end
-	
+
 	---- Hitcycle functions
-	
+
 	local function RequestAttack(Cycle, NearestTorso)
 		local MobTorso = MobInstance:FindFirstChild("Torso")
 		if not MobTorso then return end
-		
+
 		ClearConnections()
-		
+
 		if self.YieldAttackSignal then
 			self.YieldAttackSignal:Wait()
 		end
-		
+
 		local OriginalWalkSpeed = self.Config.WalkSpeed
-		
+
 		local StopWhileAttacking = Cycle.StopWhileAttacking
 		if StopWhileAttacking and typeof(StopWhileAttacking) == "number" then
 			task.delay(StopWhileAttacking, function()
@@ -657,37 +681,37 @@ function Mob:CommitHitCycle()
 
 			self:SetWalkSpeed("HitCycle", -9999)
 		end
-		
+
 		local TelegraphAnimation = Cycle.TelegraphAnimation
 		EventModule:FireAllClients("RequestAnimateMob", 
 			MobInstance, "Telegraph" .. TelegraphAnimation[1], 
 			TelegraphAnimation[1], TelegraphAnimation[2], TelegraphAnimation[3], Cycle.ShowTrail
 		)
-		
+
 		task.spawn(function()
 			self.YieldCycleSignal = Signal.new()
-			
+
 			task.delay((Cycle.Cooldown or 1) * 0.75, function()
 				ClearConnections()
-				
+
 				self.YieldCycleSignal:Fire()
 
 				self.YieldCycleSignal:Destroy()
 				self.YieldCycleSignal = nil
 			end)
-			
+
 			local TotalDuration = (TelegraphAnimation[2] or 0) + (TelegraphAnimation[3] or 0)
 			if TotalDuration > 0 then
 				task.wait(TotalDuration)
 			end
-			
+
 			local Callback = Cycle.Callback 
 			if Callback then
 				task.spawn(Callback, MobInstance, NearestTorso)
 			end
-			
+
 			PlayToolSound(MobTorso)
-			
+
 			local Attack = Cycle.Attack
 			if Attack then
 				if Attack[2] == "InFront" then
@@ -699,7 +723,7 @@ function Mob:CommitHitCycle()
 					AttackPlayersInRadius(MobTorso.Position, Attack[1])
 				end
 			end
-			
+
 			for _, Object in self.HitboxObjects do
 				if Object.Size.Magnitude > 3.5 then
 					self.HitboxConnections[#self.HitboxConnections + 1] = Object.Touched:Connect(OnTouched)
@@ -707,33 +731,33 @@ function Mob:CommitHitCycle()
 			end
 		end)
 	end
-	
+
 	local function GoThroughHitCycle()
 		for _, Cycle in HitCycle do
 			local NearestTorso = FindNearestTorso(MobInstance, nil, true)
 			local MobTorso = MobInstance:FindFirstChild("Torso")
-			
+
 			local isStunned = AttributeModule:GetAttribute(MobInstance, "Stunned")
 			if NearestTorso and MobTorso and not isStunned then 
 				local AttackDistance = Cycle.Range or 4 * MobTorso.Size.Y
 
 				if (NearestTorso.Position - MobTorso.Position).Magnitude <= AttackDistance then
 					RequestAttack(Cycle, NearestTorso)
-					
+
 					task.wait(Cycle.Cooldown or 1)
 				end
 			else
 				task.wait(0.5)
 			end
-			
+
 			table.clear(Cooldown)
 		end
 	end
-	
+
 	if HitCycle then
 		self.Threads[#self.Threads + 1] = task.spawn(function()
 			task.wait(1)
-			
+
 			while self and not self.isDead do
 				GoThroughHitCycle()
 				task.wait()
@@ -745,7 +769,7 @@ end
 function Mob:CommitAttackSystem()
 	local MobInstance = self.Instance
 	local Enemy = MobInstance:FindFirstChild("Enemy") :: Humanoid
-	
+
 	local AttackConfig = AttackFunctions:GetAttackCycle(self)
 	self.AttackConfig = AttackConfig
 
@@ -754,13 +778,13 @@ function Mob:CommitAttackSystem()
 			if self.YieldCycleSignal then
 				self.YieldCycleSignal:Wait()
 			end
-			
+
 			local NearestTorso = FindNearestTorso(MobInstance, nil, Cycle.RequiresTarget)
-			
+
 			local isStunned = AttributeModule:GetAttribute(MobInstance, "Stunned")
 			if NearestTorso and not isStunned then
 				local YieldSignal = Signal.new()
-				
+
 				task.spawn(function() -- for some reason i can't cancel this so rip
 					while YieldSignal do
 						if not FindNearestTorso(MobInstance, nil, Cycle.RequiresTarget) then
@@ -771,15 +795,15 @@ function Mob:CommitAttackSystem()
 						task.wait(1)
 					end
 				end)
-				
+
 				task.spawn(Cycle.Callback, NearestTorso, self)
-				
+
 				local StopWhileAttacking = Cycle.StopWhileAttacking
 				if StopWhileAttacking and typeof(StopWhileAttacking) == "number" then
 					task.delay(StopWhileAttacking, function()
 						self:SetWalkSpeed("AttackCycle", nil)
 					end)
-					
+
 					self:SetWalkSpeed("AttackCycle", -9999)
 				end
 
@@ -788,15 +812,15 @@ function Mob:CommitAttackSystem()
 					local TotalDuration = (TelegraphAnimation[2] or 0) + (TelegraphAnimation[3] or 0)
 					if TotalDuration > 0 then
 						self.YieldAttackSignal = Signal.new()
-						
+
 						task.delay(TotalDuration + 0.5, function()
 							self.YieldAttackSignal:Fire()
-							
+
 							self.YieldAttackSignal:Destroy()
 							self.YieldAttackSignal = nil
 						end) 
 					end
-					
+
 					EventModule:FireAllClients("RequestAnimateMob", 
 						MobInstance, "Telegraph" .. TelegraphAnimation[1], 
 						TelegraphAnimation[1], TelegraphAnimation[2], TelegraphAnimation[3]
@@ -828,22 +852,22 @@ function Mob:CommitAttackSystem()
 						end
 					end)
 				end
-				
+
 				self.Signals[#self.Signals + 1] = YieldSignal
-				
+
 				YieldSignal:Wait()
 
 				if self.AttackConnection then
 					self.AttackConnection:Disconnect()
 					self.AttackConnection = nil
 				end
-				
+
 				if self.Threads.AttackThread then
 					self.Threads.AttackThread = nil
 				end
-				
+
 				self.Threads.AttackThread = nil
-				
+
 				YieldSignal:Destroy()
 				YieldSignal = nil
 			else
@@ -869,15 +893,15 @@ end
 function Mob:AwardDrops()
 	if self.Awarded then return end
 	self.Awarded = true
-	
+
 	local PlayerTags = self.Instance:FindFirstChild("PlayerTags") :: Configuration
 	if not PlayerTags then return end
-	
+
 	local AlreadyGiven = {}
-	
+
 	for UserId, Damage: number in PlayerTags:GetAttributes() do
 		UserId = tonumber(UserId)
-		
+
 		if AlreadyGiven[UserId] then continue end
 		AlreadyGiven[UserId] = true
 
@@ -888,7 +912,7 @@ function Mob:AwardDrops()
 		local pData = PlayerData:FindFirstChild(Player.UserId)
 
 		local Products = ProductLib:GetProducts(Player)
-		local AllocatedLuck = GetPlayerLuck(Products)
+		local AllocatedLuck = GetPlayerLuck(Player, Products)
 
 		local Statistics = pData:FindFirstChild("Stats")
 		if not Statistics then continue end
@@ -901,7 +925,7 @@ function Mob:AwardDrops()
 				if not Mobs then	
 					continue
 				end
-				
+
 				for _, Value in Mobs:GetChildren() do
 					if Value.Name == self.Name then
 						Value.Value += 1
@@ -909,12 +933,24 @@ function Mob:AwardDrops()
 				end
 			end
 		end
-		
+
 		Statistics.Kills.Value += 1
 
+		-- Mob Index Tracking
+		local MobKillsFolder = pData:FindFirstChild("MobKills")
+		if MobKillsFolder then
+			local mobKillStat = MobKillsFolder:FindFirstChild(self.Name)
+			if not mobKillStat then
+				mobKillStat = Instance.new("NumberValue")
+				mobKillStat.Name = self.Name
+				mobKillStat.Parent = MobKillsFolder
+			end
+			mobKillStat.Value += 1
+		end
+
 		---- Handle items & stats
-		
-		GiftDrops(Player, self.Config.Drops, true, true, true)
+
+		GiftDrops(Player, self.Config.Drops, true, true, true, self.Instance)
 
 		---- Handle badges & misc
 
@@ -940,7 +976,7 @@ function Mob:AwardDrops()
 		if BadgeID and not AttributeModule:GetAttribute(Player, tostring(BadgeID)) then
 			task.defer(AwardBadge, BadgeID)
 		end
-		
+
 		if self.Config.TeleportLocation then
 			EventModule:FireClient("RequestTeleport", Player, self.Config.TeleportLocation, true)
 		end
@@ -954,7 +990,7 @@ function Mob:CheckRegenerateTag()
 
 	local RegenerateConnections = {}
 	local DespawnTask = nil
-	
+
 	local function ClearRegenerateConnections()
 		for _, Connection in RegenerateConnections do
 			if typeof(Connection) == "RBXScriptConnection" then
@@ -962,10 +998,10 @@ function Mob:CheckRegenerateTag()
 			else
 				task.cancel(Connection)
 			end
-			
+
 			Connection = nil
 		end
-		
+
 		RegenerateConnections = {}
 	end
 
@@ -996,12 +1032,12 @@ function Mob:CheckRegenerateTag()
 		if Object.Name == "RegenerateTag" and Object:IsA("Configuration") then
 			Object:GetAttributeChangedSignal("Clock"):Connect(function()
 				local Clock = Object:GetAttribute("Clock") :: number
-				
+
 				if DespawnTask then
 					task.cancel(DespawnTask)
 					DespawnTask = nil
 				end
-				
+
 				if Clock == nil then 
 					return 
 				end

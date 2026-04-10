@@ -37,6 +37,23 @@ local function PlayBackpackSound(HumanoidRootPart)
 	end
 end
 
+local function GetSlotKey(ItemInstance)
+	if typeof(ItemInstance) ~= "Instance" then return "" end
+
+	-- If the instance's name is already the full compound string (from UI Mock Instances), natively return it
+	if string.find(ItemInstance.Name, "|") then return ItemInstance.Name end
+
+	local baseName = string.split(ItemInstance.Name, "|")[1]
+	local enchantAttr = ItemInstance:GetAttribute("Enchantments")
+
+	if enchantAttr and enchantAttr ~= "" then
+		local enchants = string.split(enchantAttr, ",")
+		return baseName .. "|" .. table.concat(enchants, "|")
+	end
+
+	return baseName
+end
+
 ---- Callbacks
 
 function ActivatedCallbacks:Material(Slot)
@@ -46,56 +63,67 @@ end
 function ActivatedCallbacks:Armor(Slot)
 	local Character = Player.Character
 	local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-	
-	if pData.ActiveArmor.Value == Slot.ItemInstance.Name then 
-		EventModule:InvokeServer("UnequipArmor", Slot.ItemInstance.Name)
+
+	local Config = Slot.ItemConfig
+	local ArmorType = (Config and Config.ArmorType) or "Chestplate"
+
+	local ActiveArmor = pData:WaitForChild("ActiveArmor")
+	local CurrentEquippedName = ActiveArmor[ArmorType].Value
+
+	-- Safely grab the full compound key
+	local SlotKey = GetSlotKey(Slot.ItemInstance)
+
+	if CurrentEquippedName == SlotKey then 
+		EventModule:InvokeServer("UnequipArmor", SlotKey)
 	else
 		PlayBackpackSound(HumanoidRootPart)
-		EventModule:InvokeServer("EquipArmor", Slot.ItemInstance.Name)
+		EventModule:InvokeServer("EquipArmor", SlotKey)
 	end
 end
 
 function ActivatedCallbacks:Accessory(Slot)
 	local Character = Player.Character
 	local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-	
+
 	local LowestEmptyIndex = math.huge
 	local isUnequipped = false
-	
+
+	-- Safely grab the full compound key
+	local SlotKey = GetSlotKey(Slot.ItemInstance)
+
 	local function RequestUnequipAccessory(Name, Index)
 		EventModule:InvokeServer("UnequipAccessory", Index)
 	end
-	
+
 	local function RequestEquipAccessory(Name, Index)
 		EventModule:InvokeServer("EquipAccessory", Name, LowestEmptyIndex)
 	end
-	
+
 	local EquippedSlots = pData.EquippedSlots
 	for _, NewSlot in EquippedSlots:GetChildren() do
 		local Index = tonumber(NewSlot.Name)
-		
-		if NewSlot.Value == Slot.ItemInstance.Name then
+
+		if NewSlot.Value == SlotKey then
 			isUnequipped = true
-			
 			RequestUnequipAccessory(NewSlot.Value, Index)
 		end
-		
+
 		if NewSlot.Value == "" and Index < LowestEmptyIndex then
 			LowestEmptyIndex = Index
 		end
 	end
-	
+
 	if not isUnequipped then
 		PlayBackpackSound(HumanoidRootPart)
-		
+
 		if LowestEmptyIndex > GameConfig.EquippedAccessoryMax then
 			LowestEmptyIndex = GameConfig.EquippedAccessoryMax 
-			
+
 			local NewSlot = EquippedSlots:FindFirstChild(tostring(LowestEmptyIndex))
 			RequestUnequipAccessory(NewSlot.Value, LowestEmptyIndex)
 		end
-		
-		RequestEquipAccessory(Slot.ItemInstance.Name, LowestEmptyIndex)
+
+		RequestEquipAccessory(SlotKey, LowestEmptyIndex)
 	end
 end
 
@@ -105,6 +133,9 @@ function ActivatedCallbacks:Orb(Slot)
 
 	local LowestEmptyIndex = math.huge
 	local isUnequipped = false
+
+	-- Safely grab the full compound key
+	local SlotKey = GetSlotKey(Slot.ItemInstance)
 
 	local function RequestUnequipOrb(Name, Index)
 		EventModule:InvokeServer("UnequipOrb", Index)
@@ -118,9 +149,8 @@ function ActivatedCallbacks:Orb(Slot)
 	for _, NewSlot in EquippedOrbs:GetChildren() do
 		local Index = tonumber(NewSlot.Name)
 
-		if NewSlot.Value == Slot.ItemInstance.Name then
+		if NewSlot.Value == SlotKey then
 			isUnequipped = true
-
 			RequestUnequipOrb(NewSlot.Value, Index)
 		end
 
@@ -139,29 +169,46 @@ function ActivatedCallbacks:Orb(Slot)
 			RequestUnequipOrb(NewSlot.Value, LowestEmptyIndex)
 		end
 
-		RequestEquipOrb(Slot.ItemInstance.Name, LowestEmptyIndex)
+		RequestEquipOrb(SlotKey, LowestEmptyIndex)
 	end
 end
 
 -- Calls if there's no other activated callback
 function ActivatedCallbacks:Default(Slot)
-	local ItemName = Slot.ItemInstance.Name
-	
-	local Item = Player.Backpack:FindFirstChild(Slot.ItemInstance.Name) 
-		or Player.Character:FindFirstChild(ItemName)
-	
-	Slot.ItemInstance = Item
+	local ExpectedKey = GetSlotKey(Slot.ItemInstance)
+	local Item = nil
+
+	-- Search the container for the exact matching tool (including enchantments)
+	local function FindExactTool(Container)
+		if not Container then return nil end
+		for _, child in ipairs(Container:GetChildren()) do
+			if child:IsA("Tool") and GetSlotKey(child) == ExpectedKey then
+				return child
+			end
+		end
+		return nil
+	end
+
+	-- Check if it is currently equipped
+	Item = FindExactTool(Player.Character)
+	local isEquipped = (Item ~= nil)
+
+	-- If not equipped, find it in the backpack
+	if not Item then
+		Item = FindExactTool(Player.Backpack)
+	end
+
+	-- Fail-safe: Prevents the UI from silently breaking if the item is missing
+	if not Item then return end 
 
 	local Character = Player.Character
-	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid?
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	if not Humanoid then return end
 
-	-- Equip/unequip
-	if Humanoid and Humanoid.Health > 0 then
-		if Character:FindFirstChild(Item.Name) then
-			Humanoid:UnequipTools()
-		else
-			Humanoid:EquipTool(Item)
-		end
+	if isEquipped then
+		Humanoid:UnequipTools()
+	else
+		Humanoid:EquipTool(Item)
 	end
 end
 

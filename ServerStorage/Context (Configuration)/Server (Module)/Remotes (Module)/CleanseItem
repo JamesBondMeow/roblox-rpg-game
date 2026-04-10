@@ -1,0 +1,154 @@
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+--> References
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+local GiveItemWithAmount = require(ServerStorage.Modules.Server.giveItemWithAmount)
+local RemoveItemWithAmount = require(ServerStorage.Modules.Server.removeItemWithAmount)
+
+--> Variables
+local Remotes = {}
+
+--------------------------------------------------------------------------------
+local function GetItemCategory(BaseName)
+	for Cat, Items in pairs(ContentLibrary) do
+		if Items[BaseName] then return Cat, Items[BaseName] end
+	end
+	return nil, nil
+end
+
+local function ReplaceCompoundItem(Player, OldCompound, NewCompound, EnchantsAttr, Category, BaseItem)
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	local Folder = pData.Items[Category]
+
+	if Folder:FindFirstChild(OldCompound) then
+		Folder[OldCompound].Value -= 1
+		if Folder[OldCompound].Value <= 0 then Folder[OldCompound]:Destroy() end
+	end
+
+	local NewStat = Folder:FindFirstChild(NewCompound)
+	if NewStat then NewStat.Value += 1 else
+		NewStat = Instance.new("NumberValue")
+		NewStat.Name = NewCompound
+		NewStat.Value = 1
+		NewStat.Parent = Folder
+	end
+
+	-- Physical Tool Math
+	if Category == "Tool" then
+		local removedFromInv = false
+		local removedFromChar = false
+		local removedFromSG = false
+
+		-- Helper to safely sort and find the old physical tool to destroy
+		local function safelyRemoveOldTool(location, flag)
+			if flag or not location then return flag end
+			for _, tool in ipairs(location:GetChildren()) do
+				if tool.Name == BaseItem.Config.Name then
+					local eAttr = tool:GetAttribute("Enchantments")
+					local key = tool.Name
+					if eAttr and eAttr ~= "" then
+						local encs = string.split(eAttr, ",")
+						table.sort(encs) -- MUST sort to match the DataStore format
+						key = key .. "|" .. table.concat(encs, "|")
+					end
+
+					if key == OldCompound then 
+						tool:Destroy() 
+						return true
+					end
+				end
+			end
+			return flag
+		end
+
+		removedFromInv = safelyRemoveOldTool(Player.Backpack, removedFromInv)
+		removedFromChar = safelyRemoveOldTool(Player.Character, removedFromChar)
+		removedFromSG = safelyRemoveOldTool(Player:FindFirstChild("StarterGear"), removedFromSG)
+
+		-- Give new physical instance
+		local bpClone = BaseItem.Instance:Clone()
+		local sgClone = BaseItem.Instance:Clone()
+
+		if EnchantsAttr and EnchantsAttr ~= "" then
+			bpClone:SetAttribute("Enchantments", EnchantsAttr)
+			sgClone:SetAttribute("Enchantments", EnchantsAttr)
+		end
+
+		bpClone.Parent = Player.Backpack
+		sgClone.Parent = Player:FindFirstChild("StarterGear")
+	end
+end
+
+--------------------------------------------------------------------------------
+
+function Remotes:OnEvent(Player, ItemCompoundName, EnchantIdToCleanse) 
+	if not ItemCompoundName or not EnchantIdToCleanse then return false, "Invalid arguments" end
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	if not pData then return false, "Data missing" end
+
+	-- 1. Parse Item
+	local split = string.split(ItemCompoundName, "|")
+	local BaseName = split[1]
+	local CurrentEnchants = {}
+	local hasEnchant = false
+	for i = 2, #split do 
+		table.insert(CurrentEnchants, split[i]) 
+		if split[i] == EnchantIdToCleanse then hasEnchant = true end
+	end
+
+	if not hasEnchant then return false, "Item does not have this enchantment." end
+
+	local Category, BaseItem = GetItemCategory(BaseName)
+	if not Category or not BaseItem then return false, "Item not found" end
+
+	local itemStat = pData.Items[Category]:FindFirstChild(ItemCompoundName)
+	if not itemStat or itemStat.Value < 1 then return false, "You do not own this item." end
+
+	-- 2. Find the Enchantment Config to get Cleanser requirement
+	local EnchantTomeName = nil
+	local CleanserName = nil
+	for matName, matData in pairs(ContentLibrary.Material) do
+		if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == EnchantIdToCleanse then
+			EnchantTomeName = matName
+			CleanserName = matData.Config.EnchantmentData.Cleanser .. " Cleanser"
+			break
+		end
+	end
+
+	if not EnchantTomeName or not CleanserName then return false, "Enchantment data missing." end
+
+	-- 3. Check Ownership of Cleanser
+	local CleanserContent = ContentLibrary.Material[CleanserName]
+	if not CleanserContent or CountTotalCopies(CleanserContent, Player) < 1 then 
+		return false, "You do not own the required " .. CleanserName 
+	end
+
+	-- 4. Consume Cleanser
+	RemoveItemWithAmount(Player, "Material", CleanserName, 1)
+
+	-- 5. Build New Identifier
+	local NewEnchantsList = {}
+	for _, id in ipairs(CurrentEnchants) do
+		if id ~= EnchantIdToCleanse then table.insert(NewEnchantsList, id) end
+	end
+	table.sort(NewEnchantsList)
+
+	local NewCompoundName = BaseName .. (#NewEnchantsList > 0 and ("|" .. table.concat(NewEnchantsList, "|")) or "")
+	local NewEnchantsAttr = #NewEnchantsList > 0 and table.concat(NewEnchantsList, ",") or nil
+
+	-- 6. Replace Item
+	ReplaceCompoundItem(Player, ItemCompoundName, NewCompoundName, NewEnchantsAttr, Category, BaseItem)
+
+	-- 7. Refund the Enchantment Tome
+	GiveItemWithAmount(Player, "Material", EnchantTomeName, 1)
+
+	return true, "Item Cleansed!"
+end
+
+return Remotes

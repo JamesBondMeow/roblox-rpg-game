@@ -1,0 +1,67 @@
+--[[
+	This module contains all data for player ranks and special tags.
+]]
+
+local module = {}
+
+-- Ranks are awarded based on level milestones.
+-- The system will find the highest level requirement the player meets.
+module.Ranks = {
+	-- {Level Requirement, "Title", Color}
+	{Level = 1, Title = "Recruit", Color = Color3.fromRGB(200, 200, 200)},
+	{Level = 5, Title = "Novice", Color = Color3.fromRGB(228, 255, 226)},
+	{Level = 10, Title = "Apprentice", Color = Color3.fromRGB(189, 255, 253)},
+	{Level = 15, Title = "Squire", Color = Color3.fromRGB(163, 138, 200)},
+	{Level = 20, Title = "Initiate", Color = Color3.fromRGB(196, 200, 129)},
+	{Level = 30, Title = "Journeyman", Color = Color3.fromRGB(100, 200, 100)},
+	{Level = 40, Title = "Adept", Color = Color3.fromRGB(128, 177, 255)},
+	{Level = 50, Title = "Knight", Color = Color3.fromRGB(180, 121, 121)},
+	{Level = 60, Title = "Sergeant ", Color = Color3.fromRGB(200, 164, 74)},
+	{Level = 70, Title = "Lieutenant", Color = Color3.fromRGB(143, 15, 255)},
+	{Level = 80, Title = "Captain", Color = Color3.fromRGB(163, 200, 29)},
+	{Level = 90, Title = "Commander", Color = Color3.fromRGB(234, 0, 255)},
+	{Level = 100, Title = "Specialist", Color = Color3.fromRGB(200, 49, 49)},
+	{Level = 110, Title = "Expert", Color = Color3.fromRGB(255, 150, 100)},
+	{Level = 120, Title = "Master", Gradient = "Master", Color = Color3.fromRGB(226, 121, 255)},
+	{Level = 130, Title = "Grandmaster", Gradient = "Grandmaster", Color = Color3.fromRGB(255, 72, 0)},
+	{Level = 140, Title = "Champion", Gradient = "Champion", Color = Color3.fromRGB(0, 166, 255)},
+	{Level = 150, Title = "Hero", Gradient = "Epic", Color = Color3.fromRGB(157, 124, 255)},
+	{Level = 160, Title = "Legend", Gradient = "Legendary", Color = Color3.fromRGB(255, 173, 58)},
+	{Level = 170, Title = "Mythic", Gradient = "Mythic", Color = Color3.fromRGB(255, 121, 121)},
+	{Level = 180, Title = "Demi-God", Gradient = "Divine", Color = Color3.fromRGB(255, 246, 123)},
+	{Level = 190, Title = "God", Gradient = "Eternal", Color = Color3.fromRGB(0, 255, 247)},
+	{Level = 200, Title = "Originator", Gradient = "Rainbow", Color = Color3.fromRGB(255, 0, 0)},
+}
+-- Sort ranks from highest level to lowest for easier processing
+table.sort(module.Ranks, function(a, b) return a.Level > b.Level end)
+
+
+-- Special tags that can appear above the rank.
+-- Weight determines priority (higher number = higher priority).
+module.Tags = {
+	VIP = {Text = "VIP", Color = Color3.fromRGB(50, 255, 50), Weight = 10},
+	MVP = {Text = "MVP", Color = Color3.fromRGB(255, 50, 50), Weight = 20},
+
+	TESTER = {Text = "TESTER", Color = Color3.fromRGB(0, 150, 255), Weight = 80},
+	OWNER = {Text = "OWNER", Color = Color3.fromRGB(255, 200, 50), Weight = 100},
+}
+
+-- Lists of Player UserIDs for specific tags.
+module.SpecialUserIDs = {
+	OWNER = {
+		8948110182,
+		9176696803
+	},
+	TESTER = {
+		14181950,
+		49481964,
+		1846703508,
+		4513747223,
+		1182880403,
+		9179059012,
+		--9429374538,
+		114604938
+	},
+}
+
+return module

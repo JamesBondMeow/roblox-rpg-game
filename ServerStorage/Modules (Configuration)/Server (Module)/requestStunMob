@@ -5,6 +5,7 @@
 ]]
 
 --> Services
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
@@ -20,32 +21,42 @@ local Mobs = require(ServerStorage.Modules.Libraries.Mob.MobList)
 --------------------------------------------------------------------------------
 
 return function(Mob, StunTime)
-	if typeof(Mob) == "Instance" or (typeof(Mob) == "table" and not Mob.Instance) then
-		Mob = Mobs[Mob]
+	local targetInstance = nil
+
+	if typeof(Mob) == "Instance" then
+		-- Automatically handle both Mobs AND Player Characters
+		if CollectionService:HasTag(Mob, "Mob") then
+			Mob = Mobs[Mob]
+			targetInstance = Mob and Mob.Instance
+		else
+			targetInstance = Mob
+		end
+	elseif typeof(Mob) == "table" then
+		targetInstance = Mob.Instance
 	end
-	
-	if AttributeModule:GetAttribute(Mob.Instance, "NoStun") or AttributeModule:GetAttribute(Mob.Instance, "Stunned") then
+
+	if not targetInstance then return end
+
+	if AttributeModule:GetAttribute(targetInstance, "NoStun") or AttributeModule:GetAttribute(targetInstance, "Stunned") then
 		return
 	end
-	
-	local StunEffect = StunAsset:Clone()
-	StunEffect.Parent = Mob.Instance:FindFirstChild("Head")
 
-	for _, Particle in StunEffect:GetChildren() do
-		task.delay(math.clamp(StunTime - 0.5, 0.5, math.huge), function()
-			Particle.Enabled = false
-		end)
+	local head = targetInstance:FindFirstChild("Head")
+	if head then
+		local StunEffect = StunAsset:Clone()
+		StunEffect.Parent = head
+
+		for _, Particle in StunEffect:GetChildren() do
+			task.delay(math.clamp(StunTime - 0.5, 0.5, math.huge), function()
+				Particle.Enabled = false
+			end)
+		end
+		Debris:AddItem(StunEffect, StunTime + 3)
 	end
-	Debris:AddItem(StunEffect, StunTime + 3)
 
 	task.delay(StunTime, function()
-		if Mob and not Mob.isDead then
-			AttributeModule:SetAttribute(Mob.Instance, "Stunned", nil)
-			Mob:SetWalkSpeed("ParryStun", nil)
-		end
+		AttributeModule:SetAttribute(targetInstance, "Stunned", nil)
 	end)
-	
-	AttributeModule:SetAttribute(Mob.Instance, "Stunned", true)
-	Mob:RequestCallback("OnStunned")
-	Mob:SetWalkSpeed("ParryStun", -9999)
+
+	AttributeModule:SetAttribute(targetInstance, "Stunned", true)
 end

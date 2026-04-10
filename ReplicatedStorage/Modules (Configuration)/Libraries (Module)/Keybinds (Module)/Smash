@@ -1,0 +1,44 @@
+-- [CLIENT]
+-- Smash Ability
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+local SFX = require(ReplicatedStorage.Modules.Shared.SFX)
+
+local Keybind = {}
+
+function Keybind:Validate(Player)
+	local Character = Player.Character
+	local humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local manaFolder = humanoid and humanoid:FindFirstChild("Mana")
+	local manaValue = manaFolder and manaFolder:FindFirstChild("Mana")
+	local currentMana = manaValue and manaValue:GetAttribute("Default") or 0
+
+	return currentMana >= 30
+end
+
+function Keybind:OnActivated(Player)
+	if not self:Validate(Player) then return end
+
+	local Character = Player.Character
+	local humanoid = Character:FindFirstChildOfClass("Humanoid")
+	local rootPart = Character:FindFirstChild("HumanoidRootPart")
+
+	local Tool = Character:FindFirstChildWhichIsA("Tool")
+	if not Tool then return end
+
+	-- Play a heavy "Smash" animation
+	local smashAnim = Instance.new("Animation")
+	smashAnim.AnimationId = "rbxassetid://83139847191674"
+	local track = humanoid:LoadAnimation(smashAnim)
+	track:Play()
+
+	-- Play the impact sound
+	SFX:Play3D("rbxassetid://12222216", rootPart)
+	Debris:AddItem(smashAnim, 1)
+end
+
+function Keybind:OnLetGo(Player) end
+
+return Keybind

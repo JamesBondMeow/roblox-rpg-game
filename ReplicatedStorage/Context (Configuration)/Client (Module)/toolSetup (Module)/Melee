@@ -28,46 +28,115 @@ local ToolSystem = require(ReplicatedStorage.Modules.Client.ToolSystem)
 local CustomCAS = require(ReplicatedStorage.Modules.Client.CustomCAS)
 
 local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
 
 --> Variables
 local LastEquippedTool = 0
 
 --------------------------------------------------------------------------------
+local function GetToolEnchantmentProps(Tool, TargetFamily)
+	if not Tool then return nil end
+	local enchantAttr = Tool:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return nil end
+
+	local enchants = string.split(enchantAttr, ",")
+	for _, enchantId in ipairs(enchants) do
+		local config = ContentLibrary.Material[enchantId]
+		if not config then
+			for _, matData in pairs(ContentLibrary.Material) do
+				if matData.Config and matData.Config.EnchantmentData and matData.Config.EnchantmentData.Id == enchantId then
+					config = matData
+					break
+				end
+			end
+		end
+		if config and config.Config.EnchantmentData then
+			local family = config.Config.EnchantmentData.Family or string.split(enchantId, "_")[1]
+			if family == TargetFamily then
+				return config.Config.EnchantmentData.Properties
+			end
+		end
+	end
+	return nil
+end
 --------------------------------------------------------------------------------
 
 return function(Tool)
 	local Handle = Tool:WaitForChild("Handle")
 	local ItemConfig = require(Tool:WaitForChild("ItemConfig"))
 	
+	-- Apply Haste (Cooldown Reduction) securely via Metatable
+	local hasteProps = GetToolEnchantmentProps(Tool, "Haste")
+	local slothProps = GetToolEnchantmentProps(Tool, "Sloth")
+
+	local cdr = 0
+	if hasteProps then cdr += (hasteProps.CooldownReduction or 0.10) end
+
+	if cdr > 0 or slothProps then
+		local modifiedConfig = setmetatable({}, {__index = ItemConfig})
+		local baseCd = ItemConfig.Cooldown
+		if cdr > 0 then baseCd = baseCd * (1 - cdr) end
+		if slothProps then baseCd = baseCd * slothProps.CooldownIncrease or 2 end -- Sloth Halves Attack Speed
+		modifiedConfig.Cooldown = baseCd
+		ItemConfig = modifiedConfig
+	end
+
 	local toolSystem = ToolSystem.new(Tool, true)
-	
+
 	-- Variables
 	local ActiveSlashTrack
+
+	-- Momentum State Tracker
+	local momentumStacks = 0
+	local lastHitSomething = false
+	local lastHitTime = 0
+	
+	-- Block Break Tracker
+	local BlockHitsTaken = 0
+	local ActiveBlockVFX = nil
+
+	-- Dynamic Cooldown for Bloodlust & Momentum
+	local function GetDynamicCooldown()
+		local cd = ItemConfig.Cooldown
+		if Player.Character and Player.Character:GetAttribute("BloodlustActive") then
+			cd = cd * 0.80 -- +20% Attack Speed
+		end
+
+		-- Momentum
+		local momentumProps = GetToolEnchantmentProps(Tool, "Momentum")
+		if momentumProps then
+			local maxStacks = momentumProps.MaxStacks or 10
+			local speedPerStack = momentumProps.SpeedPerStack or 0.01
+			cd = cd * (1 - (math.min(momentumStacks, maxStacks) * speedPerStack))
+		end
+
+		return cd
+	end
 
 	local CachedDebounce = {}
 	local Callbacks = {}
 	local Debounce = {}
-	
+
 	local Blocking = false
 	local Equipped = false
 	local OnDelay = false
 	local CanHit = false
-	
+
 	local isDelayedSwing = ItemConfig.Cooldown >= 1 or ItemConfig.DelayedSwing
-	
+
 	local swingStart = (ItemConfig.DelayedSwing and math.clamp(ItemConfig.DelayedSwing[1], 0, ItemConfig.Cooldown))
 		or 0
-	
+
 	local swingEnd = (ItemConfig.DelayedSwing and math.clamp(ItemConfig.DelayedSwing[2], swingStart, ItemConfig.Cooldown))
 		or ItemConfig.Cooldown
 		or 1
-	
+
 	local BlockLetGo = 0
 	local BlockActivations = ItemConfig.BlockAndParry and {ItemConfig.BlockAndParry.Keybind}
-	
+
 	-- Character
 	local Character = Player.Character or Player.CharacterAdded:Wait()
-	
+
 	local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
 	local Animator = Humanoid:WaitForChild("Animator") :: Animator
 
@@ -84,10 +153,10 @@ return function(Tool)
 
 	local function OnTouched(HitPart: BasePart?, Delta: number?)
 		local Model = HitPart.Parent
-		
+
 		local isLingeredHitbox = isDelayedSwing and (os.clock() - toolSystem.LastSwing > swingEnd) 
 			or isDelayedSwing and (os.clock() - toolSystem.LastSwing < swingStart)
-		
+
 		if isLingeredHitbox
 			or Blocking 
 			or (os.clock() - BlockLetGo < 0.2) 
@@ -95,7 +164,7 @@ return function(Tool)
 		then
 			return
 		end
-		
+
 		local isMob = CollectionService:HasTag(Model, "Mob")
 		local isProp = CollectionService:HasTag(Model, "Prop")
 
@@ -104,7 +173,7 @@ return function(Tool)
 
 		if (not Tool.Enabled and not FindDebounce(Enemy)) and Enemy then
 			local HasHitRecently = CachedDebounce[Enemy] and os.clock() - CachedDebounce[Enemy] < 0.1
-			
+
 			local IsDisabled = os.clock() - toolSystem.LastDisable < 0
 			if IsDisabled or HasHitRecently then
 				return
@@ -112,10 +181,12 @@ return function(Tool)
 
 			if (isMob and Enemy.Health > 0) or (isProp and not AttributeModule:GetAttribute(Model, "isDead")) then
 				EventModule:FireServer("DamageEntity", Model, nil, ItemConfig.ToolType or ItemConfig.WeaponType)
+				lastHitSomething = true -- successfully hit a target
+				lastHitTime = os.clock() -- Record the time of the hit for the grace period
 			end
 
 			if not isDelayedSwing then
-				task.delay(ItemConfig.Cooldown, function()
+				task.delay(GetDynamicCooldown(), function()
 					local Index = FindDebounce(Enemy)
 					if Index then
 						table.remove(Debounce, Index)
@@ -129,34 +200,34 @@ return function(Tool)
 	end
 
 	--------------------------------------------------------------------------------
-	
+
 	local UserInputTypes = {}
 	for Name in Enum.UserInputType:GetEnumItems() do
 		UserInputTypes[Name] = true
 	end
-	
+
 	local function CheckIfCanBlock(Ignore)
 		if not Tool:IsDescendantOf(workspace) or not ItemConfig.BlockAndParry then
 			return
 		end
-		
+
 		local IsBlocking = false
 		for _, Input in BlockActivations do
 			if UserInputTypes[Input.Name] and UserInputService:IsMouseButtonPressed(Input) or UserInputService:IsKeyDown(Input) then
 				IsBlocking = true
 			end
 		end
-		
+
 		if IsBlocking then
 			Callbacks.RequestStartBlock(Ignore)
 		end
 	end
-	
+
 	local function RequestActivate()
 		if not ItemConfig.Autofire or not Tool:IsDescendantOf(workspace) then
 			return
 		end
-				
+
 		local IsAutofiring = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 		if IsAutofiring then
 			Tool:Activate()
@@ -164,19 +235,35 @@ return function(Tool)
 			CheckIfCanBlock()
 		end
 	end
-	
+
 	local RequestSwing = os.clock()
-	
+
 	Tool.Activated:Connect(function()
 		if not Tool.Enabled or Humanoid.Health <= 0 then
 			return
 		end
-		
+
 		local TimeLeftDisabled = os.clock() - toolSystem.LastDisable 
-		
+
 		local Clock = os.clock()
 		RequestSwing = Clock
 		
+		-- Evaluate Momentum Streak
+		local momentumProps = GetToolEnchantmentProps(Tool, "Momentum")
+		if momentumProps then
+			local gracePeriod = momentumProps.GracePeriod or 3 -- The player has 3 seconds to land another hit
+
+			if (Clock - lastHitTime) > gracePeriod then
+				-- Grace period expired: Reset stacks
+				momentumStacks = 0
+			elseif lastHitSomething then
+				-- We hit a target on the last swing: Add a stack
+				momentumStacks = math.min(momentumProps.MaxStacks or 10, momentumStacks + 1)
+			end
+		end
+		lastHitSomething = false -- Reset for the current swing
+		BlockHitsTaken = 0 -- Reset block break hits when going back on the offensive
+
 		local IsDisabled = TimeLeftDisabled < 0
 		if IsDisabled then
 			task.delay(TimeLeftDisabled + 0.03, function()
@@ -184,21 +271,21 @@ return function(Tool)
 					RequestActivate()
 				end
 			end)
-			
+
 			return
 		end
-		
+
 		if Blocking or (os.clock() - BlockLetGo < 0.2) then
 			return
 		end
-		
+
 		---- Hit miscellaneous & activated
-		
+
 		toolSystem:Activated()
-		
+
 		local Clock = os.clock()
 		toolSystem.LastSwing = Clock
-		
+
 		-- Hit delay
 		if swingStart > 0 then
 			task.delay(swingStart, function()
@@ -209,79 +296,81 @@ return function(Tool)
 		else
 			CanHit = true
 		end
-		
+
 		task.delay(swingEnd, function()
 			if toolSystem.LastSwing == Clock then
 				CanHit = false
 			end
 		end)
-		
+
 		task.delay(swingStart, function()
 			if toolSystem.LastSwing == Clock then
 				toolSystem:RequestUpdateTrail(true)
 			end
 		end)
-		
+
 		-- Other
 		table.clear(Debounce)
-		
+
 		EventModule:Fire("PlayerUsedWeapon", ItemConfig.Cooldown, Tool.Name)
-		
+
 		Tool.Enabled = false
-		
+
 		---- Callback
-		
-		task.delay(ItemConfig.Cooldown, function()
-			CanHit = false
-			Tool.Enabled = true
-			
-			RequestActivate()
+
+		task.delay(GetDynamicCooldown(), function()
+			-- Ensure tool is still in character before enabling
+			if Tool and Tool.Parent then
+				CanHit = false
+				Tool.Enabled = true
+				RequestActivate()
+			end
 		end)
-		
+
 		task.delay(swingEnd, toolSystem.RequestUpdateTrail, toolSystem, false)
 	end)
-	
+
 	Tool.Equipped:Connect(function()
+		Tool.Enabled = true
+		toolSystem.LastDisable = 0
+
 		toolSystem:Equipped()
-		
 		Equipped = true
 
 		while Equipped do
 			for _, Part in Handle:GetTouchingParts() do
 				task.spawn(OnTouched, Part)
 			end
-			
 			RunService.Heartbeat:Wait()
 		end
 	end)
 
 	Tool.Unequipped:Connect(function()
 		toolSystem:Unequipped()
-		
 		Equipped = false
 		CanHit = false
 	end)
-	
+
 	Handle.Touched:Connect(function()
 		-- keep
 	end)
-	
+
 	---- Parry connection
 	-- btw i apologize if the code's messy, annoying having to account for the default kit animations & all exceptions
-	
+
 	if ItemConfig.BlockAndParry and not ItemConfig.ToolType then
 		local BlockConnections = {}
 		local CheckingParry = false
-		
+
 		local LastStoppedBlock = os.clock()
 		local RequestHold = os.clock()
 		local LastBlock = os.clock()
-		
+
 		local ParryAnimationTrack = nil :: AnimationTrack
 		local ParryAnimations = nil :: {any}
-		
+
 		---- Animation handler
-		
+
 		-- Preferred w/ custom animations is an animation to go into both parrying & blocking, however, I can't use custom animations in a kit
 		-- I recommend you to use those instead, I've supplied how to in this code
 		local UsesKitSystem = not ItemConfig.BlockAndParry.Animation.Hold
@@ -296,25 +385,25 @@ return function(Tool)
 				ParryAnimations[Name] = _Animation:LoadAnimations(Animation)
 			end
 		end
-		
+
 		-- Animation callbacks
 		local function StopBlockAnimation(NoAdjust)
 			if ParryAnimationTrack.IsPlaying then
 				ParryAnimationTrack:Stop(0.15)
 			end
-			
+
 			if not NoAdjust then
 				ParryAnimationTrack:AdjustSpeed(1)
 			end
 		end
-		
+
 		local function PlayCustomAnimation(Name)
 			toolSystem:StopAnimations({"Hold", "Block", "Parry", "LetGo"}, 0.35)
 			if ParryAnimations[Name] then
 				return toolSystem:PlayAnimation(Name, toolSystem:PickAnimation(Name, nil, ParryAnimations), 0.35)
 			end
 		end
-		
+
 		-- Main callbacks
 		local function PlayBlockHold(Clock)
 			if UsesKitSystem then
@@ -335,7 +424,7 @@ return function(Tool)
 				PlayCustomAnimation("Hold")
 			end
 		end
-		
+
 		local function PlayMainParry()
 			if UsesKitSystem then
 				ParryAnimationTrack:AdjustSpeed(1)
@@ -344,7 +433,7 @@ return function(Tool)
 				return PlayCustomAnimation("Parry")
 			end
 		end
-		
+
 		local function PlayMainBlock()
 			if UsesKitSystem then
 				StopBlockAnimation(true)
@@ -352,7 +441,7 @@ return function(Tool)
 				PlayCustomAnimation("Block")
 			end
 		end
-		
+
 		local function PlayBlockLetGo()
 			if UsesKitSystem then
 				StopBlockAnimation(true)
@@ -360,7 +449,7 @@ return function(Tool)
 				PlayCustomAnimation("LetGo")
 			end
 		end
-		
+
 		-- Connect w/ end block
 		local function ConnectParried()
 			local Track = PlayMainParry()
@@ -375,48 +464,63 @@ return function(Tool)
 
 			toolSystem:RequestUpdateTrail(true)
 			SFX:Play3D(GameConfig.ParrySFX[1], Tool.Handle, {Volume = GameConfig.ParrySFX[2]})
-			
+
 			task.delay(0.25, toolSystem.RequestUpdateTrail, toolSystem, false)
 		end
-		
-		local function ConnectBlockedOrLetGo(Result)
-			if Result == "Blocked" then
-				PlayMainBlock()
 
-				toolSystem.LastDisable = os.clock() + ItemConfig.BlockAndParry.DisableTime
-				EventModule:Fire("PlayerUsedWeapon", ItemConfig.BlockAndParry.DisableTime, Tool.Name)
-
-				SFX:Play3D(GameConfig.BlockSFX[1], Tool.Handle, {Volume = GameConfig.BlockSFX[2]})
-				task.delay(ItemConfig.BlockAndParry.DisableTime, CheckIfCanBlock, true)
-			else
-				PlayBlockLetGo()
-			end
-
-			task.delay(0.25 - 0.01, CheckIfCanBlock, true)
-			LastStoppedBlock = os.clock() + 0.25
-		end
-		
 		---- Blocking logic itself - non-animation for the most part
-		
+
 		local function ConnectEndBlock(Result)
 			BlockConnections = toolSystem:RequestDisconnectAll(BlockConnections)
 
-			local IsDisabled = os.clock() - toolSystem.LastDisable < 0
-			if IsDisabled or Humanoid.Health <= 0 then
+			-- Destroy Block VFX
+			if ActiveBlockVFX then
+				ActiveBlockVFX:Destroy()
+				ActiveBlockVFX = nil
+			end
+
+			if Humanoid.Health <= 0 then
+				AttributeModule:SetAttribute(Character, "Blocking", nil)
+				Blocking = false
 				return
 			end
-			
-			-- Check parried & blocked
+
 			if Result == "Parried" then
 				ConnectParried()
+			elseif Result == "Broken" then
+				PlayBlockLetGo()
+
+				local breakStunTime = ItemConfig.BlockAndParry.DisableTime or 5
+
+				toolSystem.LastDisable = os.clock() + breakStunTime 
+				EventModule:Fire("PlayerUsedWeapon", breakStunTime, Tool.Name)
+				SFX:Play3D(GameConfig.BlockSFX[1], Tool.Handle, {Volume = GameConfig.BlockSFX[2], Pitch = 0.5})
+
+				-- Apply actual player stun (Stops movement entirely for 2.5s)
+				local walkSpeedConfig = Humanoid:FindFirstChild("Attributes") and Humanoid.Attributes:FindFirstChild("WalkSpeed")
+				if walkSpeedConfig then
+					walkSpeedConfig:SetAttribute("BlockBreakStun", -9999)
+					task.delay(2, function()
+						if walkSpeedConfig then
+							walkSpeedConfig:SetAttribute("BlockBreakStun", nil)
+						end
+					end)
+					EventModule:FireServer("RequestPlayerStun", 2.5)	
+				end
+
+				task.delay(0.25, CheckIfCanBlock, true)
+				LastStoppedBlock = os.clock() + breakStunTime
 			else
-				ConnectBlockedOrLetGo(Result)
+				-- Normal Let Go
+				PlayBlockLetGo()
+				task.delay(0.25, CheckIfCanBlock, true)
+				LastStoppedBlock = os.clock() + 0.25
 			end
-			
+
 			AttributeModule:SetAttribute(Character, "Blocking", nil)
 			Blocking = false
 		end
-		
+
 		function Callbacks.RequestStartBlock(Ignore)
 			if CheckingParry 
 				or (not Ignore and os.clock() - LastStoppedBlock < 0) 
@@ -424,9 +528,9 @@ return function(Tool)
 			then
 				return
 			end
-			
+
 			local TimeLeftDisabled = os.clock() - toolSystem.LastDisable 
-			
+
 			local Clock = os.clock()
 			RequestHold = Clock
 
@@ -440,38 +544,75 @@ return function(Tool)
 
 				return
 			end
-			
+
 			AttributeModule:SetAttribute(Character, "Blocking", true)
 			Blocking = true
 
+			-- Start block vfx
+			if not ActiveBlockVFX then
+				local EffectFolder = ReplicatedStorage.Assets.Effects:FindFirstChild("Block")
+				if EffectFolder then
+					local AttachmentTemplate = EffectFolder:FindFirstChildWhichIsA("Attachment") or (EffectFolder:IsA("Attachment") and EffectFolder)
+
+					if AttachmentTemplate then
+						local charRoot = Character:FindFirstChild("HumanoidRootPart")
+						if charRoot then
+							ActiveBlockVFX = AttachmentTemplate:Clone()
+							ActiveBlockVFX.Parent = charRoot
+							ActiveBlockVFX.Position = Vector3.new(0, 0, -3)
+
+							for _, vfx in ipairs(ActiveBlockVFX:GetChildren()) do
+								if vfx:IsA("ParticleEmitter") then 
+									if vfx.Name == "Shield" then
+										vfx.Enabled = true
+									elseif vfx.Name == "AbsorbHit" then
+										vfx.Enabled = false
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+
 			PlayBlockHold()
-			EventModule:FireServer("RequestBlock", Tool, true)
+
+			-- Check for parry at the START of the block instead of the end
+			local NearMobInstance = false
+			for _, Mob in CollectionService:GetTagged("Mob") do
+				if (Mob:GetPivot().Position - Character:GetPivot().Position).Magnitude <= 12 then
+					NearMobInstance = true
+					break
+				end
+			end
+
+			EventModule:FireServer("RequestBlock", Tool, true, NearMobInstance)
 		end
-		
+
 		local function RequestBlockWithWeapon(Verdict, GPE)
 			if Blocking and not Verdict then
-				EventModule:FireServer("RequestBlock", Tool, false, true)
+				EventModule:FireServer("RequestBlock", Tool, false, false)
 			elseif not Blocking and Verdict and not GPE then
 				Callbacks.RequestStartBlock()
 			end
 		end
-		
+
 		local function Validation(Verdict, GPE)
 			if Verdict and GPE then
 				return false
 			end
-			
+
 			return true
 		end
-		
+
 		---- Connections
 		-- These garbagecollect when the tool gets destroyed
-		
-		UserInputService.InputBegan:Connect(function(Input: InputObject, GameProcessedEvent: boolean)
+
+		local inputBeganConn = UserInputService.InputBegan:Connect(function(Input: InputObject, GameProcessedEvent: boolean)
 			if GameProcessedEvent or Blocking then
 				return
 			end
-			
+
 			if os.clock() - toolSystem.LastSwing < ItemConfig.Cooldown then
 				return
 			end
@@ -485,7 +626,7 @@ return function(Tool)
 			end
 		end)
 
-		UserInputService.InputEnded:Connect(function(Input: InputObject, GameProcessedEvent: boolean)
+		local inputEndedConn = UserInputService.InputEnded:Connect(function(Input: InputObject, GameProcessedEvent: boolean)
 			if not Blocking then
 				return
 			end
@@ -495,26 +636,84 @@ return function(Tool)
 
 			local IsPressed = Tool:IsDescendantOf(workspace) and IsInTable
 			if IsPressed then
-				local NearMobInstance = false
-				
-				for _, Mob in CollectionService:GetTagged("Mob") do
-					if (Mob:GetPivot().Position - Character:GetPivot().Position).Magnitude <= 12 then
-						NearMobInstance = true
-						break
-					end
-				end
-				
-				EventModule:FireServer("RequestBlock", Tool, false, NearMobInstance)
+				-- Let go of block
+				EventModule:FireServer("RequestBlock", Tool, false, false)
 			end
 		end)
-		
+
 		AttributeModule:GetAttributeChanged(Tool, "BlockResult"):Connect(function()
-			local Result = AttributeModule:GetAttribute(Tool, "BlockResult")
-			if Result == nil then
+			local RawResult = AttributeModule:GetAttribute(Tool, "BlockResult")
+			if RawResult == nil then
 				return
 			end
 
-			ConnectEndBlock(Result)
+			-- Filter out the os.clock() stamps the server is sending
+			local Result = tostring(RawResult)
+			if string.find(Result, "Parried") then
+				Result = "Parried"
+			elseif string.find(Result, "Blocked") then
+				Result = "Blocked"
+			end
+
+			if Result == "Parried" then
+				BlockHitsTaken = 0
+				ConnectEndBlock(Result)
+			elseif Result == "Blocked" then
+				BlockHitsTaken += 1
+
+				if BlockHitsTaken >= 3 then
+					-- Block break
+					BlockHitsTaken = 0
+
+					-- Spawn Block Break VFX
+					local BreakEffect = ReplicatedStorage.Assets.Effects:FindFirstChild("BlockBreak")
+					if BreakEffect then
+						local BreakTemplate = BreakEffect:FindFirstChildWhichIsA("Attachment") or (BreakEffect:IsA("Attachment") and BreakEffect)
+						local charRoot = Character:FindFirstChild("HumanoidRootPart")
+
+						if BreakTemplate and charRoot then
+							local ClonedBreak = BreakTemplate:Clone()
+							ClonedBreak.Parent = charRoot
+
+							for _, vfx in ipairs(ClonedBreak:GetChildren()) do
+								if vfx:IsA("ParticleEmitter") then 
+									vfx:Emit(vfx:GetAttribute("EmitCount") or 20) 
+								end
+							end
+							game.Debris:AddItem(ClonedBreak, 1)
+						end
+					end
+
+					ConnectEndBlock("Broken")
+					EventModule:FireServer("RequestBlock", Tool, false, false)
+				else
+					-- Normal block hit absorb (keep holding the shield up)
+					if ActiveBlockVFX then
+						for _, vfx in ipairs(ActiveBlockVFX:GetChildren()) do
+							if vfx:IsA("ParticleEmitter") then
+
+								-- Burst 'AbsorbHit' and tint 'Shield' based on hits taken
+								if vfx.Name == "AbsorbHit" then
+									vfx:Emit(vfx:GetAttribute("EmitCount") or 5)
+								elseif vfx.Name == "Shield" then
+									if BlockHitsTaken == 0 then
+										vfx.Color = ColorSequence.new(Color3.fromRGB(139, 131, 255)) -- Default tint
+									elseif BlockHitsTaken == 1 then
+										vfx.Color = ColorSequence.new(Color3.fromRGB(255, 255, 0)) -- Yellow tint
+									elseif BlockHitsTaken == 2 then
+										vfx.Color = ColorSequence.new(Color3.fromRGB(255, 0, 0)) -- Red tint
+									end
+								end
+
+							end
+						end
+					end
+
+					SFX:Play3D(GameConfig.BlockSFX[1], Tool.Handle, {Volume = GameConfig.BlockSFX[2]})
+				end
+			else
+				ConnectEndBlock(Result)
+			end
 		end)
 
 		Tool.Equipped:Connect(function()
@@ -522,12 +721,23 @@ return function(Tool)
 			CustomCAS:StartContextInput("WeaponBlock" .. Tool.Name, "Block", nil, true, BlockActivations[1], nil, nil, nil, 999, RequestBlockWithWeapon, Validation, nil, true, isDesktop)
 		end)
 
-		Tool.Unequipped:Connect(function()
+		-- Centralized cleanup logic
+		local function CleanupBlockUI()
 			CustomCAS:StopContextInput("WeaponBlock" .. Tool.Name)
-			
+
 			EventModule:FireServer("RequestBlock", Tool, false, false)
 			ConnectEndBlock()
+		end
+
+		Tool.Unequipped:Connect(CleanupBlockUI)
+
+		-- Forcefully sever the UserInputService memory leaks when the tool is destroyed
+		Tool.AncestryChanged:Connect(function(_, newParent)
+			if newParent == nil then
+				CleanupBlockUI()
+				if inputBeganConn then inputBeganConn:Disconnect() end
+				if inputEndedConn then inputEndedConn:Disconnect() end
+			end
 		end)
 	end
 end
-

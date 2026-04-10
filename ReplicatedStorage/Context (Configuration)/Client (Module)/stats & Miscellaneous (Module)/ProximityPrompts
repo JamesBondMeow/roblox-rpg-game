@@ -113,7 +113,7 @@ local function createCircularProgressBar()
 	local bar = Instance.new("Frame")
 	bar.Name = "CircularProgressBar"
 
-	local frameOffset = script.Prompt.Frame.InputFrame.Frame.RoundFrame.Size.Y
+	local frameOffset = script.Prompt.Frame.InputFrame.Frame.RoundFrame.Size.Y.Offset
 	bar.Size = UDim2.fromOffset(frameOffset + 5, frameOffset + 5)
 
 	bar.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -152,23 +152,27 @@ local function createPrompt(prompt, inputType, gui)
 	local promptUI = Instance.new("BillboardGui")
 	promptUI.Name = "Prompt"
 	promptUI.AlwaysOnTop = true
+	promptUI.MaxDistance = 50
 
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.fromScale(0.5, 1)
-	frame.BackgroundTransparency = 1
+	frame.BackgroundTransparency = script.Prompt.Frame.BackgroundTransparency
 	frame.BackgroundColor3 = script.Prompt.Frame.BackgroundColor3
 	frame.Parent = promptUI
 
-	local uiStroke = Instance.new("UIStroke")
-	uiStroke.Thickness = script.Prompt.Frame.UIStroke.Thickness
-	uiStroke.Transparency = 1
-	uiStroke.Color = script.Prompt.Frame.UIStroke.Color
-	uiStroke.Parent = frame
-	table.insert(tweensForFadeOut, TweenService:Create(uiStroke, tweenInfoFast, { Transparency = 1 }))
-	table.insert(tweensForFadeIn, TweenService:Create(uiStroke, tweenInfoFast, { Transparency = script.Prompt.Frame.UIStroke.Transparency }))
-
-	local roundedCorner = Instance.new("UICorner")
-	roundedCorner.Parent = frame
+	local uiStroke1 = script.Prompt.Frame.UIStroke1:Clone()
+	uiStroke1.Parent = frame
+	table.insert(tweensForFadeOut, TweenService:Create(uiStroke1, tweenInfoFast, { Transparency = 1 }))
+	table.insert(tweensForFadeIn, TweenService:Create(uiStroke1, tweenInfoFast, { Transparency = script.Prompt.Frame.UIStroke1.Transparency }))
+	local uiStroke2 = script.Prompt.Frame.UIStroke2:Clone()
+	uiStroke2.Parent = frame
+	table.insert(tweensForFadeOut, TweenService:Create(uiStroke2, tweenInfoFast, { Transparency = 1 }))
+	table.insert(tweensForFadeIn, TweenService:Create(uiStroke2, tweenInfoFast, { Transparency = script.Prompt.Frame.UIStroke2.Transparency }))
+	local uiStroke3 = script.Prompt.Frame.UIStroke3:Clone()
+	uiStroke3.Parent = frame
+	table.insert(tweensForFadeOut, TweenService:Create(uiStroke3, tweenInfoFast, { Transparency = 1 }))
+	table.insert(tweensForFadeIn, TweenService:Create(uiStroke3, tweenInfoFast, { Transparency = script.Prompt.Frame.UIStroke3.Transparency }))
+	
 
 	local inputFrame = Instance.new("Frame")
 	inputFrame.Name = "InputFrame"

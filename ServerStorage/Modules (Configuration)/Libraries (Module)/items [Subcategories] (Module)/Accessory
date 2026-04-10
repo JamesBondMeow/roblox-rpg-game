@@ -106,12 +106,17 @@ end
 function AccessoryLib:UnequipAccessory(Player: Player, Index, AccessoryName)
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChild("Humanoid")
-	
+
 	local Accessory = ContentLibrary[Library][AccessoryName]
 	local Key = "Accessory" .. tostring(Index)
-	
-	RequestCallback(Accessory.Instance, Accessory.Name, "OnUnequipped", {Player, Accessory.Config})
-	
+
+	-- Add a guard clause to handle cases where the accessory can't be found
+	if not Accessory then
+		warn("UnequipAccessory failed: Could not find accessory named '".. tostring(AccessoryName) .."' in ContentLibrary. Attempting to clear slot anyway.")
+	else
+		RequestCallback(Accessory.Instance, Accessory.Name, "OnUnequipped", {Player, Accessory.Config})
+	end
+
 	-- Humanoid changes
 	local Attributes = Humanoid and Humanoid:FindFirstChild("Attributes")
 	if Attributes then
@@ -119,7 +124,7 @@ function AccessoryLib:UnequipAccessory(Player: Player, Index, AccessoryName)
 		Attributes.WalkSpeed:SetAttribute(Key, nil)
 		Attributes.JumpPower:SetAttribute(Key, nil)
 	end
-	
+
 	local ManaAttributes = Humanoid and Humanoid:FindFirstChild("Mana")
 	if ManaAttributes then
 		ManaAttributes.MaxMana:SetAttribute(Key, nil)

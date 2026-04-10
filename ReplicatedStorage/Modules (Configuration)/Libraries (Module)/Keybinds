@@ -68,11 +68,18 @@ function Keybinds:UpdateKeybind(Key, Name, Verdict, Cooldown, Icon, HoldTime, It
 			if not Character or AttributeModule:GetAttribute(Character, "Blocking") then
 				return false
 			end
-			
+
 			if GPE then
 				return false
 			end
-			
+
+			if Verdict then
+				local CallbackMod = Callbacks[Name]
+				if CallbackMod and CallbackMod.Validate and not CallbackMod:Validate(Players.LocalPlayer) then
+					return false
+				end
+			end
+
 			return true
 		end
 		
@@ -80,7 +87,7 @@ function Keybinds:UpdateKeybind(Key, Name, Verdict, Cooldown, Icon, HoldTime, It
 			RequestCallKeybind(Player, Name, Verdict, ItemData)
 		end
 		
-		CustomCAS:StartContextInput(Name, Name, nil, true, Key, Cooldown, true, HoldTime or 2, 999, Callback, Validation)
+		CustomCAS:StartContextInput(Name, Name, nil, true, Key, Cooldown, false, HoldTime or 2, 999, Callback, Validation)
 	elseif not Verdict then
 		CustomCAS:StopContextInput(Name)
 	end

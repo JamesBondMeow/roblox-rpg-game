@@ -66,11 +66,19 @@ return function(Frame: TextButton, ItemInstance, PrimaryColor)
 		
 		local RequestedColor = CustomBackground or SpecialColor
 		RequestedColor = RequestedColor and ColorModule:ConvertToRawHSV(RequestedColor)
-		
-		TooltipFrame.GroupColor3 = RequestedColor or PrimaryColor or GameConfig.PrimaryColor
 
+		local FinalColor = RequestedColor or PrimaryColor or GameConfig.PrimaryColor
+
+		-- Apply the color to the BackgroundColor3 instead so the background remains colored
+		TooltipFrame.Frame.BackgroundColor3 = FinalColor
+		TooltipFrame.Frame.UIStrokeW.Color = FinalColor
+		TooltipFrame.GroupColor3 = Color3.fromRGB(255, 255, 255)
+
+		-- Pass the FinalColor to ReturnInfo for the Rarity text
 		Info = TooltipController:ReturnInfo(ItemInstance, ItemConfig, Info, ItemType, Type, Level)
-		TooltipController:Set(`<b>{ItemInstance.Name}</b> <font size="12" transparency="0.2">[{(ItemConfig and ItemConfig.ToolType) or Type}]{Level}</font>{Info}`)
+
+		-- Wrap everything in pure white Hex code
+		TooltipController:Set(`<font color="#FFFFFF"><b>{ItemInstance.Name}</b> <font size="12" transparency="0.2">[{(ItemConfig and ItemConfig.ToolType) or Type}]{Level}</font>{Info}</font>`)
 	end
 	
 	if CONFIG_ENABLE_TOUCHPAN_MOBILE and UserInputService.TouchEnabled then

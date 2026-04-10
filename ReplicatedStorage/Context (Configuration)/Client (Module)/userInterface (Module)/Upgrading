@@ -1,0 +1,570 @@
+--[[
+	Upgrading (Anvil)
+	
+	Handles the UI for upgrading items.
+]]
+
+--> Services
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+
+--> Player
+local Player = Players.LocalPlayer
+local PlayerGui = Player.PlayerGui
+
+local pData = ReplicatedStorage:WaitForChild("PlayerData"):WaitForChild(Player.UserId)
+local ItemsFolder = pData:WaitForChild("Items")
+local StatsFolder = pData:WaitForChild("Stats")
+
+--> References
+local CurrentCamera = workspace.CurrentCamera
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local FormatNumber = require(ReplicatedStorage.Modules.Shared.FormatNumber)
+local Tween = require(ReplicatedStorage.Modules.Shared.Tween)
+local SFX = require(ReplicatedStorage.Modules.Shared.SFX)
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+local ColorModule = require(ReplicatedStorage.Modules.Shared.Color)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+
+local SetTooltipListener = require(ReplicatedStorage.Modules.Client.setTooltipListener)
+local CreateNotification = require(ReplicatedStorage.Modules.Client.createNotification)
+local SetCanvasGroupVisibility = require(ReplicatedStorage.Modules.Client.setCanvasGroupVisibility)
+local NPCFunctions = require(ReplicatedStorage.Modules.Client.NPCFunctions)
+
+local GameConfig = require(ReplicatedStorage.GameConfig)
+
+--------------------------------------------------------------------------------
+
+return function(Gui)
+	if not GameConfig.EnabledFeatures.Crafting then
+		return
+	end
+
+	--> References
+	local MainFrame = Gui:WaitForChild("MainFrame")
+	local Content = MainFrame:WaitForChild("Content")
+	local Titlebar = MainFrame:WaitForChild("Titlebar")
+	local ExitButton = MainFrame:WaitForChild("ExitButton")
+
+	-- Areas
+	local CurrentStatsFrame = Content:WaitForChild("CurrentStats")
+	local FutureStatsFrame = Content:WaitForChild("FutureStats") 
+	local UpgradePreviewFrame = Content:WaitForChild("UpgradePreview")
+	local UpgradeCostFrame = Content:WaitForChild("UpgradeCost")
+	local InventoryListFrame = Content:WaitForChild("InventoryList")
+	local EssenceFrame = Content:WaitForChild("EssenceFrame")
+
+	local ApplyEssenceButton = EssenceFrame:WaitForChild("ApplyEssence")
+
+	-- Templates (Children of the Script)
+	local SlotTemplate = script:WaitForChild("SlotTemplate")
+	local StatTemplate = script:WaitForChild("StatTemplate")
+
+	-- Variables
+	local CurrentAnvilModel = nil
+	local AnvilConfig = nil
+
+	local SelectedItemObj = nil 
+	local SelectedUpgradeData = nil 
+
+	local appliedEssences = {} 
+	local pendingEssence = "" 
+
+	local InventoryConnections = {}
+
+	--------------------------------------------------------------------------------
+	-- Helper Functions
+
+	local function ClearFrame(Frame)
+		for _, Child in Frame:GetChildren() do
+			if Child:IsA("GuiObject") and not Child:IsA("UILayout") then
+				Child:Destroy()
+			end
+		end
+	end
+	
+	local function ParseCompoundName(compoundName)
+		local split = string.split(tostring(compoundName), "|")
+		local baseName = split[1]
+		local enchants = {}
+		for i = 2, #split do table.insert(enchants, split[i]) end
+		return baseName, enchants
+	end
+
+	-- Helper to predict the degraded item name (Client side logic matching Server)
+	local function GetDowngradedItemName(Config, CurrentBaseItemName)
+		for _, Data in ipairs(Config.Anvil) do
+			if Data.Item[2] == CurrentBaseItemName then
+				return Data.BaseItem
+			end
+		end
+		return CurrentBaseItemName
+	end
+
+	-- Parses item config and populates a grid with StatTemplates
+	local function UpdateStatGrid(Container, ItemData, IsUpgrade)
+		local Grid = Container:WaitForChild("Items")
+		ClearFrame(Grid)
+
+		local Config = ItemData.Config
+		local Type = ItemData.Type
+
+		local Stats = {}
+
+		if Type == "Tool" then
+			-- Damage
+			if Config.Damage then
+				local Dmg = Config.Damage
+				local Val = (type(Dmg) == "table" and Dmg[2]) or Dmg
+				if type(Val) == "number" then 
+					table.insert(Stats, {`{FormatNumber(Val, "Suffix")} DMG`}) 
+				end
+			end
+
+			-- Critical Chance
+			if Config.CriticalChance then
+				local Chance = Config.CriticalChance
+				if type(Chance) == "table" and (Chance[1] ~= 1 or Chance[2] ~= 50) then
+					local Percent = (Chance[1] / Chance[2]) * 100
+					table.insert(Stats, {string.format("CC: %g%%", Percent)})
+				end
+			end
+
+			if Config.Cooldown then table.insert(Stats, {`{Config.Cooldown}s AS`}) end
+			if Config.ManaCost then table.insert(Stats, {`{Config.ManaCost} Mana`}) end
+
+		elseif Type == "Armor" or Type == "Accessory" or Type == "Orb" then
+			-- Base Stats
+			if (Config.Health or 0) > 0 then 
+				table.insert(Stats, {`+{FormatNumber(Config.Health, "Suffix")} HP`}) 
+			end
+
+			if (Config.WalkSpeed or 0) > 0 then table.insert(Stats, {`+{Config.WalkSpeed} WS`}) end
+			if (Config.JumpPower or 0) > 0 then table.insert(Stats, {`+{Config.JumpPower} JP`}) end
+			if (Config.Mana or 0) > 0 then table.insert(Stats, {`+{Config.Mana} MP`}) end
+
+			-- Defense
+			if Type ~= "Accessory" and Config.Defense then
+				local Def = Config.Defense
+				if type(Def) == "number" and Def > 0 then
+					table.insert(Stats, {`+{Def} DEF`})
+				elseif type(Def) == "table" and Def[2] and type(Def[2]) == "number" and Def[2] > 0 then
+					table.insert(Stats, {`+{Def[2]} {Def[1]} DEF`})
+				end
+			end
+
+			-- Orb/Item Damage
+			if Config.Damage then
+				if type(Config.Damage) == "table" and Config.Damage[2] and Config.Damage[2] > 0 then
+					if Type == "Orb" then
+						table.insert(Stats, {`{FormatNumber(Config.Damage[2], "Suffix")} DMG`})
+					else
+						table.insert(Stats, {`+{Config.Damage[2]} {Config.Damage[1]} Dmg`})
+					end
+				elseif type(Config.Damage) == "number" and Config.Damage > 0 then
+					table.insert(Stats, {`{FormatNumber(Config.Damage, "Suffix")} DMG`})
+				end
+			end
+		end
+
+		-- Create Frames
+		for _, StatData in ipairs(Stats) do
+			local StatFrame = StatTemplate:Clone()
+			StatFrame.Text = StatData[1]
+			StatFrame.Parent = Grid
+			StatFrame.Visible = true
+		end
+
+		-- Update Header Text
+		local NameText = Container:FindFirstChild("ItemName") and Container.ItemName:FindFirstChild("NameText")
+		if NameText then
+			local Prefix = IsUpgrade and "Next: " or "Current: "
+			NameText.Text = Prefix .. ItemData.Name
+		end
+	end
+
+	local function CalculateSuccessChance(BaseChance)
+		-- Validate input
+		local safeBase = BaseChance or 0
+
+		local totalIncrease = 0
+		for _, essenceName in ipairs(appliedEssences) do
+			if essenceName and essenceName ~= "None" and essenceName ~= "" then
+				local essenceItem = ContentLibrary.Material[essenceName]
+				if essenceItem and essenceItem.Config.SuccessChanceIncrease then
+					totalIncrease += essenceItem.Config.SuccessChanceIncrease
+				end
+			end
+		end
+		return math.clamp(safeBase + totalIncrease, 0, 1)
+	end
+
+	local function UpdateCostDisplay()
+		local CostList = UpgradeCostFrame:WaitForChild("CostList")
+		local GoldLabel = CostList:WaitForChild("GoldCost")
+		local EssenceLabel = CostList:WaitForChild("UpgradeEssenceCost")
+
+		-- Reset visibility first
+		GoldLabel.Visible = false
+		EssenceLabel.Visible = false
+
+		if not SelectedUpgradeData then 
+			UpgradeCostFrame.Visible = false
+			return 
+		end
+
+		UpgradeCostFrame.Visible = true
+
+		-- Populate Costs using existing labels
+		for Category, Items in pairs(SelectedUpgradeData.Cost) do
+			for _, CostData in ipairs(Items) do
+				local Name = CostData[1]
+				local Amount = CostData[2]
+
+				if Name == "Gold" then
+					GoldLabel.Text = `{FormatNumber(Amount, "Suffix")} G`
+					GoldLabel.Visible = true
+				elseif Name == "Upgrade Essence" then
+					EssenceLabel.Text = `{FormatNumber(Amount, "Suffix")} Upgrade Essence`
+					EssenceLabel.Visible = true
+				end
+			end
+		end
+
+		-- Update Chance
+		local BaseChance = SelectedUpgradeData.BaseSuccessChance or 1 
+		local FinalChance = CalculateSuccessChance(BaseChance)
+
+		local ChanceLabel = UpgradeCostFrame:WaitForChild("SuccessChance")
+		ChanceLabel.Text = `Success : {math.floor(FinalChance * 100)}%`
+
+		-- Update Apply Button state
+		ApplyEssenceButton.Active = FinalChance < 1 
+		ApplyEssenceButton.AutoButtonColor = FinalChance < 1
+		ApplyEssenceButton.Text = (FinalChance >= 1 and "Max Chance") or "Apply"
+
+		-- Update Warning
+		local Warning = UpgradeCostFrame:WaitForChild("FailureWarning")
+		Warning.Visible = true 
+	end
+
+	local function RefreshEssenceDropdown()
+		local Dropdown = EssenceFrame:WaitForChild("SelectedOption")
+		local OptionList = EssenceFrame:WaitForChild("OptionList")
+
+		local pending = pendingEssence
+
+		ClearFrame(OptionList)
+
+		local essenceOptions = {}
+		local availableEssences = {} -- Track actual available counts
+
+		-- 1. Find all essences and count total owned
+		for name, data in pairs(ContentLibrary.Material) do
+			if data.Config.SuccessChanceIncrease then
+				availableEssences[name] = CountTotalCopies(data)
+			end
+		end
+
+		-- 2. Subtract essences that are currently applied in the session
+		for _, appliedName in ipairs(appliedEssences) do
+			if availableEssences[appliedName] then
+				availableEssences[appliedName] -= 1
+			end
+		end
+
+		-- 3. Filter list for only those with > 0 remaining
+		for essenceName, count in pairs(availableEssences) do
+			if count > 0 then
+				table.insert(essenceOptions, essenceName)
+			end
+		end
+		table.sort(essenceOptions)
+
+		-- Always allow "None" option
+		table.insert(essenceOptions, 1, "None")
+
+		for _, name in ipairs(essenceOptions) do
+			local btn = Instance.new("TextButton")
+			btn.Name = name
+
+			local countText = ""
+			if name ~= "None" then
+				countText = " (" .. (availableEssences[name] or 0) .. ")"
+			end
+			btn.Text = name .. countText
+
+			btn.Size = UDim2.new(0, 136, 0, 30)
+			btn.BackgroundColor3 = Color3.fromRGB(88, 179, 239)
+			btn.BackgroundTransparency = 0.15
+			btn.TextColor3 = Color3.fromRGB(39, 68, 83)
+			btn.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+			btn.TextSize = 16
+			btn.Parent = OptionList
+
+			btn.Activated:Connect(function()
+				pendingEssence = (name == "None" and "") or name
+				Dropdown.Text = name
+				OptionList.Visible = false
+			end)
+		end
+
+		-- Reset dropdown if pending essence ran out
+		if not table.find(essenceOptions, pendingEssence) and pendingEssence ~= "" then
+			pendingEssence = ""
+			Dropdown.Text = "None"
+		else
+			Dropdown.Text = (pendingEssence == "" and "None") or pendingEssence
+		end
+	end
+
+	local function UpdateSelection()
+		if not SelectedItemObj or not SelectedUpgradeData then
+			CurrentStatsFrame.Visible = false
+			FutureStatsFrame.Visible = false
+			UpgradePreviewFrame.Visible = false
+			UpgradeCostFrame.Visible = false
+			EssenceFrame.Visible = false
+			return
+		end
+
+		CurrentStatsFrame.Visible = true
+		FutureStatsFrame.Visible = true
+		UpgradePreviewFrame.Visible = true
+		UpgradeCostFrame.Visible = true
+
+		-- 1. Current Stats
+		local CurrentBaseName, _ = ParseCompoundName(SelectedItemObj.Name)
+		local CurrentItem = ContentLibrary[SelectedItemObj.Parent.Name][CurrentBaseName]
+		UpdateStatGrid(CurrentStatsFrame, CurrentItem, false)
+
+		-- 2. Future Stats (Stats Only)
+		local NextItemName = SelectedUpgradeData.Item[2]
+		local NextItemType = SelectedUpgradeData.Item[1]
+		local NextItem = ContentLibrary[NextItemType][NextItemName]
+		UpdateStatGrid(FutureStatsFrame, NextItem, true)
+
+		-- 3. Upgrade Preview (Button & Visuals)
+		UpgradePreviewFrame.Label.Image = NextItem.Config.IconId and `rbxassetid://{NextItem.Config.IconId}` or ""
+		UpgradePreviewFrame.NextLevel.Text = `ꜛ☆{SelectedUpgradeData.UpgradeLevel}`
+
+		-- 4. Costs & Chance
+		UpdateCostDisplay()
+
+		-- 5. Essence
+		EssenceFrame.Visible = true
+		RefreshEssenceDropdown()
+	end
+
+	local function RefreshInventoryList(AutoSelectName)
+		local Container = InventoryListFrame:FindFirstChild("ScrollingFrame") or InventoryListFrame
+
+		ClearFrame(Container)
+		table.clear(InventoryConnections)
+
+		if not AnvilConfig then return end
+
+		local hasAutoSelected = false
+
+		-- Scan Inventory
+		for _, Category in pairs(ItemsFolder:GetChildren()) do
+			for _, ItemValue in pairs(Category:GetChildren()) do
+				-- Check if this item is a base for any upgrade in the config
+				local baseName, enchants = ParseCompoundName(ItemValue.Name)
+				local UpgradeMatch = nil
+				for _, Data in ipairs(AnvilConfig.Anvil) do
+					if Data.BaseItem == baseName then
+						UpgradeMatch = Data
+						break
+					end
+				end
+
+				if UpgradeMatch then
+					local ItemData = ContentLibrary[Category.Name][baseName]
+
+					local Slot = SlotTemplate:Clone()
+					Slot.Name = ItemValue.Name
+
+					-- Highlight Enchanted Items in the List
+					Slot.ItemName.Text = (#enchants > 0 and "✦ " .. baseName) or baseName
+
+					if ItemData.Config.IconId then
+						Slot.ItemIcon.Label.Image = `rbxassetid://{ItemData.Config.IconId}`
+					end
+
+					-- Selection Logic
+					if SelectedItemObj == ItemValue then
+						Slot.UIStroke.Color = Color3.fromRGB(0, 255, 0) -- Highlight
+						Slot.UIStroke.Thickness = 2
+					else
+						Slot.UIStroke.Color = Color3.fromRGB(60, 60, 60)
+						Slot.UIStroke.Thickness = 2
+					end
+
+					Slot.Button.Activated:Connect(function()
+						SelectedItemObj = ItemValue
+						SelectedUpgradeData = UpgradeMatch
+						appliedEssences = {} -- Reset essence on new selection
+						pendingEssence = ""
+						RefreshInventoryList() -- Refresh to show highlight
+						UpdateSelection()
+					end)
+					
+					Slot.Amount.Text = `x{ItemValue.Value}`
+					Slot.Amount.Visible = ItemValue.Value > 1
+
+					Slot.Parent = Container
+					Slot.Visible = true
+
+					-- If we haven't selected anything yet, and this item matches our target
+					if AutoSelectName and ItemValue.Name == AutoSelectName and not hasAutoSelected then
+						SelectedItemObj = ItemValue
+						SelectedUpgradeData = UpgradeMatch
+						hasAutoSelected = true
+
+						-- Apply visual highlight immediately
+						Slot.UIStroke.Color = Color3.fromRGB(0, 255, 0)
+						Slot.UIStroke.Thickness = 2
+
+						-- Trigger UI update
+						UpdateSelection()
+					end
+				end
+			end
+		end
+	end
+
+	---- Interaction ---------------------------------------------------------------
+
+	local function OpenAnvil(AnvilModel, Config)
+		CurrentAnvilModel = AnvilModel
+		AnvilConfig = Config
+
+		Titlebar.Text = Config.Name
+
+		-- Reset
+		SelectedItemObj = nil
+		SelectedUpgradeData = nil
+		appliedEssences = {}
+
+		RefreshInventoryList()
+		UpdateSelection() 
+
+		Gui.Enabled = true
+		SetCanvasGroupVisibility(MainFrame, true)
+	end
+
+	local function CloseAnvil()
+		CurrentAnvilModel = nil
+		AnvilConfig = nil
+		SetCanvasGroupVisibility(MainFrame, false)
+	end
+
+	-- Apply Essence Button
+	EssenceFrame.ApplyEssence.Activated:Connect(function()
+		local CurrentChanceText = UpgradeCostFrame:WaitForChild("SuccessChance").Text
+		if pendingEssence == "" or pendingEssence == "None" or (CurrentChanceText == "Success : 100%") then
+			return
+		end
+
+		local essenceItem = ContentLibrary.Material[pendingEssence]
+		local totalOwned = CountTotalCopies(essenceItem)
+		local alreadyAppliedCount = 0
+		for _, appliedName in ipairs(appliedEssences) do
+			if appliedName == pendingEssence then
+				alreadyAppliedCount += 1
+			end
+		end
+
+		if totalOwned > alreadyAppliedCount then
+			table.insert(appliedEssences, pendingEssence)
+			UpdateCostDisplay() -- Update chance text
+			RefreshEssenceDropdown() -- Update numbers in dropdown
+
+			-- Visual Feedback
+			ApplyEssenceButton.Text = "Applied!"
+			task.wait(0.5)
+
+			local FinalChance = CalculateSuccessChance(SelectedUpgradeData.BaseSuccessChance)
+			if FinalChance < 1 then
+				ApplyEssenceButton.Text = "Apply"
+			else
+				ApplyEssenceButton.Text = "Max Chance"
+				ApplyEssenceButton.Active = false
+				ApplyEssenceButton.AutoButtonColor = false
+			end
+		else
+			CreateNotification("Cannot Apply", "Not enough " .. pendingEssence .. " available.", 12900311562)
+		end
+	end)
+
+	-- Toggle Dropdown
+	EssenceFrame.SelectedOption.Activated:Connect(function()
+		EssenceFrame.OptionList.Visible = not EssenceFrame.OptionList.Visible
+	end)
+
+	-- Upgrade Button
+	UpgradePreviewFrame.Upgrade.Activated:Connect(function()
+		if not SelectedItemObj or not SelectedUpgradeData then return end
+
+		-- Store current base info to calculate target/fail names
+		local CurrentCompoundName = SelectedItemObj.Name
+		local CurrentBaseName, enchants = ParseCompoundName(CurrentCompoundName)
+		local TargetBaseName = SelectedUpgradeData.Item[2]
+
+		-- Invoke Server
+		local Success, Response = EventModule:InvokeServer("UpgradeItem", CurrentAnvilModel, CurrentCompoundName, appliedEssences)
+
+		if Success then
+			CreateNotification("Upgrade Success!", Response or "Item Upgraded!", 12900311398)
+			SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+		else
+			CreateNotification("Result", Response or "Upgrade Failed.", 12900311562)
+		end
+
+		-- Reset State but attempt to Auto-Select result
+		SelectedItemObj = nil
+		SelectedUpgradeData = nil
+		appliedEssences = {}
+
+		local NameToSelect
+		if Success then
+			NameToSelect = TargetBaseName
+			if #enchants > 0 then NameToSelect = NameToSelect .. "|" .. table.concat(enchants, "|") end
+		else
+			-- Failure: Downgrade logic
+			NameToSelect = GetDowngradedItemName(AnvilConfig, CurrentBaseName)
+			if #enchants > 0 then NameToSelect = NameToSelect .. "|" .. table.concat(enchants, "|") end
+		end
+
+		-- Pass the target name to the refresh function
+		RefreshInventoryList(NameToSelect)
+
+		-- If auto-select found nothing, we clear the UI:
+		if not SelectedItemObj then
+			UpdateSelection()
+		end
+	end)
+
+	ExitButton.Activated:Connect(CloseAnvil)
+
+	---- Setup World Interaction ---------------------------------------------------
+
+	local isOpen = false
+	local function RequestCheck() return isOpen end
+
+	local function PerAnvil(Model)
+		NPCFunctions:CreateProximityPrompt(Model, RequestCheck, ExitButton.Activated, CloseAnvil, OpenAnvil)
+	end
+
+	CollectionService:GetInstanceAddedSignal("Anvil"):Connect(PerAnvil)
+	for _, Anvil in CollectionService:GetTagged("Anvil") do
+		task.spawn(PerAnvil, Anvil)
+	end
+
+	CloseAnvil()
+end

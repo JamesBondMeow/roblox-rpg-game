@@ -1,0 +1,47 @@
+--[[
+	RespawnStoneHandler
+	Handles creating ProximityPrompts for Respawn Stones and setting new respawn location.
+]]
+script:SetAttribute("Priority", 1)
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+
+local function SetupStone(stone)
+	local prompt = stone:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if not prompt then
+		prompt = Instance.new("ProximityPrompt")
+		prompt.ActionText = "Set Respawn Point"
+		prompt.ObjectText = "Respawn Stone"
+		prompt.HoldDuration = 3
+		prompt.KeyboardKeyCode = Enum.KeyCode.E
+		prompt.ClickablePrompt = true
+		prompt.RequiresLineOfSight = false
+		prompt.MaxActivationDistance = 10
+		prompt.Style = Enum.ProximityPromptStyle.Custom
+		prompt.Parent = stone:FindFirstChildWhichIsA("SpawnLocation", true) or stone
+	end
+
+	-- Connect the trigger directly on the server for better security and reliability
+	if not prompt:GetAttribute("TriggerHooked") then
+		prompt:SetAttribute("TriggerHooked", true)
+
+		prompt.Triggered:Connect(function(Player)
+			local spawnLoc = stone:FindFirstChildWhichIsA("SpawnLocation", true)
+			if spawnLoc then
+				Player.RespawnLocation = spawnLoc
+			end
+
+			-- Ensure the attribute is ALWAYS set, even if the SpawnLocation block is missing
+			Player:SetAttribute("RespawnPoint", stone.Name)
+		end)
+	end
+end
+
+for _, stone in ipairs(CollectionService:GetTagged("RespawnStone")) do
+	SetupStone(stone)
+end
+
+CollectionService:GetInstanceAddedSignal("RespawnStone"):Connect(SetupStone)
+
+return {}

@@ -1,0 +1,24 @@
+-- ReplicatedStorage/Config/DeveloperProducts.lua
+--[[
+	DeveloperProducts Configuration
+	
+	This module now only contains data about the rewards.
+	The server will handle the logic for granting them.
+]]
+
+return {
+	-- Gold Developer Products
+	[3424317907] = {RewardType = "Stat", StatName = "Gold", Amount = 1000},
+	[3424318287] = {RewardType = "Stat", StatName = "Gold", Amount = 5000},
+	[3424318675] = {RewardType = "Stat", StatName = "Gold", Amount = 10000},
+	[3424319442] = {RewardType = "Stat", StatName = "Gold", Amount = 50000},
+	[3430129919] = {RewardType = "Stat", StatName = "Gold", Amount = 100000},
+	[3472525008] = {RewardType = "Stat", StatName = "Gold", Amount = 500000},
+	--[3472525548] = {RewardType = "Stat", StatName = "Gold", Amount = 1000000},
+
+	-- Soul Fragments Developer Products
+	[3430175383] = {RewardType = "Item", ItemType = "Material", ItemName = "Soul Fragment", Amount = 25},
+	[3430175813] = {RewardType = "Item", ItemType = "Material", ItemName = "Soul Fragment", Amount = 50},
+	[3430176358] = {RewardType = "Item", ItemType = "Material", ItemName = "Soul Fragment", Amount = 100},
+	[3430176553] = {RewardType = "Item", ItemType = "Material", ItemName = "Soul Fragment", Amount = 200},
+}

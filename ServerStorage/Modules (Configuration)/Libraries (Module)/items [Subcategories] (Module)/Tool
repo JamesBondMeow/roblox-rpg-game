@@ -29,31 +29,61 @@ local ToolLib = {}
 
 function ToolLib:Give(Player: Player, Tool, DontSave, ShopBought, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
+
 	local isItem = typeof(Tool) == "table" 
 	if not isItem then
 		warn(`Item {Library} --> {tostring(Tool) or "nil"} doesn't exist as a table, try using ContentLibrary.`)
 		return
 	end
-	
+
 	if pData then
 		local Found = pData.Items[Library]:FindFirstChild(Tool.Name)
-		
+
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Library].IsStackable
 		local CanGive = ((not Found) or IsStackable)
-		
+
 		local CanBuyMultiple = ShopBought == "Force" or (ShopBought and (not Tool.Config.Cost[4]) and IsStackable)
 		if CanGive or CanBuyMultiple then
 			CreateValue(pData, Tool, DontSave, Amount, Library)
 
+			-- Parse the compound name so the server natively stamps the attributes on the physical tool
+			local split = string.split(Tool.Name, "|")
+			local baseName = split[1]
+			local enchants = {}
+			for i = 2, #split do table.insert(enchants, split[i]) end
+			local enchantAttr = #enchants > 0 and table.concat(enchants, ",") or nil
+
+			-- Helper to ensure we don't accidentally duplicate the exact enchanted variant
+			local function checkHasPhysical(container)
+				if not container then return false end
+				for _, t in ipairs(container:GetChildren()) do
+					local tAttr = t:GetAttribute("Enchantments")
+					if tAttr == "" then tAttr = nil end
+
+					if t.Name == baseName and tAttr == enchantAttr then
+						return true
+					end
+				end
+				return false
+			end
+
 			local StarterGear = Player:FindFirstChild("StarterGear")
-			if StarterGear and not StarterGear:FindFirstChild(Tool.Name) then
-				Tool.Instance:Clone().Parent = StarterGear
+			if StarterGear and not checkHasPhysical(StarterGear) then
+				local clone = Tool.Instance:Clone()
+				clone.Name = baseName -- Safe name for native equipping
+				if enchantAttr then clone:SetAttribute("Enchantments", enchantAttr) end
+				clone.Parent = StarterGear
 			end
 
 			local Backpack = Player:WaitForChild("Backpack")
-			if Backpack and not Backpack:FindFirstChild(Tool.Name) then
-				Tool.Instance:Clone().Parent = Backpack
+			local hasInBackpack = checkHasPhysical(Backpack)
+			local hasInCharacter = checkHasPhysical(Player.Character)
+
+			if Backpack and not (hasInBackpack or hasInCharacter) then
+				local clone = Tool.Instance:Clone()
+				clone.Name = baseName -- Safe name for native equipping
+				if enchantAttr then clone:SetAttribute("Enchantments", enchantAttr) end
+				clone.Parent = Backpack
 			end
 
 			return true
@@ -65,20 +95,36 @@ end
 
 function ToolLib:Trash(Player: Player, Tool, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
+
 	if pData then
 		RemoveValue(pData, Tool, Amount, Library)
-		
+
 		local CompletelyRemoved = not pData.Items[Library]:FindFirstChild(Tool.Name)
 		if CompletelyRemoved then
-			if Player.StarterGear:FindFirstChild(Tool.Name) then
-				Player.StarterGear[Tool.Name]:Destroy()
+
+			-- Ensure the server deletes the exact enchanted variant if called here
+			local split = string.split(Tool.Name, "|")
+			local baseName = split[1]
+			local enchants = {}
+			for i = 2, #split do table.insert(enchants, split[i]) end
+			local enchantAttr = #enchants > 0 and table.concat(enchants, ",") or nil
+
+			local function removeMatches(container)
+				if not container then return end
+				for _, t in ipairs(container:GetChildren()) do
+					local tAttr = t:GetAttribute("Enchantments")
+					if tAttr == "" then tAttr = nil end
+
+					if t.Name == baseName and tAttr == enchantAttr then
+						t:Destroy()
+					end
+				end
 			end
-			if Player.Backpack:FindFirstChild(Tool.Name) then
-				Player.Backpack[Tool.Name]:Destroy()
-			end
-			if Player.Character and Player.Character:FindFirstChild(Tool.Name) then
-				Player.Character[Tool.Name]:Destroy()
+
+			removeMatches(Player:FindFirstChild("StarterGear"))
+			removeMatches(Player:FindFirstChild("Backpack"))
+			if Player.Character then
+				removeMatches(Player.Character)
 			end
 		end
 	else

@@ -26,6 +26,7 @@ AIMob.__index = AIMob
 local CHECK_ALL_MOVEMENT = 1 / 2
 local MOVEMENT_DURATION = 1 / 4
 local WANDER_CHECK_TIME = 1 / 5
+local STUCK_TIMEOUT = 5
 
 ---- UTILITY FUNCTIONS ---------------------------------------------------------
 
@@ -52,37 +53,37 @@ function AIMob.new(Mob)
 	local self = setmetatable({}, AIMob)
 	self.Instance = Mob.Instance
 	self.Mob = Mob
-	
+
 	local Agent = self:ConstructPathfindingAgent(Mob)
 	Mob.Path = Agent and PathfindingService:CreatePath(Agent)
 	Mob.Agent = Agent
-	
+
 	self.Threads = {}
-	
+
 	self.Threads[#self.Threads + 1] = task.spawn(AIMob.ConnectActiveCycle, self)
 	self.Threads[#self.Threads + 1] = task.spawn(function()
 		while self:IsMobAlive() do
 			if not Mob.isActive and not Mob.isWandering and not Mob.isGoingBack then
 				self:StartWandering()
 			end
-			
+
 			self:RequestJump()
 			task.wait(CHECK_ALL_MOVEMENT)
 		end
 	end)
-	
+
 	if Mob.Ranged and not Mob.Shooting then
 		self.Threads[#self.Threads + 1] = task.spawn(function()
 			Mob.Shooting = true
-			
+
 			while self:IsMobAlive() do
 				self:RequestShootAt()
-				
+
 				task.wait(Mob.Config.Cooldown or 1)
 			end
 		end)
 	end
-	
+
 	return self
 end
 
@@ -91,7 +92,7 @@ function AIMob:Destroy()
 		task.cancel(Thread)
 		Thread = nil
 	end
-	
+
 	setmetatable(self, nil)
 end
 
@@ -101,7 +102,7 @@ end
 
 function AIMob:SetNetworkOwner(Owner)
 	if not self:IsMobAlive() then return end
-	
+
 	task.spawn(function()
 		pcall(function()
 			self.Mob.Root:SetNetworkOwner(Owner)
@@ -111,7 +112,7 @@ end
 
 function AIMob:ConstructPathfindingAgent()
 	if not self:IsMobAlive() then return end
-	
+
 	return {
 		AgentRadius =  self.Mob.Instance.Hitbox.Size.X,
 		AgentHeight =  self.Mob.Instance.Hitbox.Size.Y,
@@ -130,10 +131,10 @@ end
 -- appearing to 'idle' if the current distance/magnitude is between the streaming minimum and the max follow distance (including 2x possibility)
 function AIMob:GetClosestPlayer(MaxDistance)
 	if not self:IsMobAlive() then return end
-	
+
 	local Mob = self.Mob
 	local RegenerateTag = Mob.Instance:FindFirstChild("RegenerateTag")
-	
+
 	if RegenerateTag then
 		local PlayerID = RegenerateTag:GetAttribute("PlayerID") 
 		local Player = PlayerID and (Players:GetPlayerByUserId(PlayerID) or Players:GetPlayerByUserId("-" .. PlayerID))
@@ -189,12 +190,12 @@ end
 -- Active mobs are unanchored, and anchored back when they're not active (not within follow range of any player)
 function AIMob:StartTracking(Range)
 	if not self:IsMobAlive() then return end
-	
+
 	local Mob = self.Mob
 	local Success = false
-	
+
 	local FollowDistance = Range or Mob.FollowDistance
-	
+
 	local Player, Magnitude = self:GetClosestPlayer(FollowDistance)
 	if Player and Magnitude and Magnitude < FollowDistance then
 		local Character = Player.Character
@@ -338,7 +339,7 @@ function AIMob:RequestFollowPath(Path, Destination, Target, Ignore, NotMaxDist)
 
 							Enemy:MoveTo(Origin + RetreatVector, nil)
 						end
-						
+
 						self:RequestDisconnect()
 						break 
 					end
@@ -398,9 +399,9 @@ function AIMob:StartWandering()
 
 					if Chosen then
 						currentlyWandering = true
-						
+
 						self:RequestFollowPath(Mob.Path, Chosen, nil, true)
-						
+
 						currentlyWandering = false
 					end
 				end
@@ -422,18 +423,27 @@ function AIMob:GoBack(CantChase)
 		Mob.isActive = false
 		Mob.isWandering = false
 		Mob.isGoingBack = true
-		
+
 		local MobInstance = Mob.Instance
 		AttributeModule:SetAttribute(MobInstance, "Target", nil)
-		
+
 		self:SetNetworkOwner()
-		
+
 		Mob:RequestCallback("OnGoingBack")
 		Mob:SetWalkSpeed("GoingBack", (Mob.Config.WanderSpeed and Mob.Config.WanderSpeed - Mob.Config.WalkSpeed) or -2)
+
+		local StartTime = os.clock() -- Track when we started going back
 
 		while Mob and Mob.Instance and not Mob.isDead and Mob.isGoingBack and not Mob.isActive and (Mob.Origin.Position - Mob.Instance:GetPivot().Position).Magnitude > 5 do
 			if not CantChase and self:StartTracking() then 
 				break 
+			end
+
+			-- If we've been trying to go back for too long, force teleport
+			if (os.clock() - StartTime) > STUCK_TIMEOUT then
+				-- Teleport to origin spawn point to fix stuck mobs
+				Mob.Instance:PivotTo(Mob.Origin)
+				break
 			end
 
 			self:RequestJump()
@@ -452,19 +462,19 @@ function AIMob:RequestShootAt(Player)
 
 	local Mob = self.Mob
 	local MobInstance = Mob.Instance
-	
+
 	local isStunned = AttributeModule:GetAttribute(MobInstance, "Stunned")
 	if isStunned then return end
-	
+
 	local Player = Player or self:GetClosestPlayer(Mob.FollowDistance)
 	if not Player then return end
-	
+
 	local Origin = MobInstance:GetPivot().Position
 	local Destination = Player.Character:GetPivot().Position
 
 	local Magnitude = (Destination - Origin).Magnitude
 	local Distance = 15 - Magnitude
-	
+
 	local Tool = MobInstance:FindFirstChildWhichIsA("Tool")
 
 	-- Shoot projectile
@@ -479,12 +489,12 @@ function AIMob:RequestShootAt(Player)
 		local Direction = (Destination - Origin).Unit
 
 		Mob:RequestCallback("OnShoot", {Player})
-		
+
 		EventModule:FireAllClients("MobProcessedFire",
 			MobInstance, Origin, Direction, 
 			Mob.Config.Projectile, Mob.Config.Damage, Mob.Config.ActivateSound
 		)
-		
+
 		EventModule:FireAllClients("RequestAnimateMob", MobInstance, "Fire")
 	end
 end
@@ -495,9 +505,9 @@ function AIMob:ConnectActiveCycle()
 	local Mob = self.Mob
 	local Enemy = Mob.Enemy
 	local MobInstance = Mob.Instance
-	
+
 	local previouslyActive = false
-	
+
 	while self:IsMobAlive() do
 		if Mob.isActive and Mob.Root then
 			Mob:SetWalkSpeed("GoingBack", nil)
@@ -506,20 +516,20 @@ function AIMob:ConnectActiveCycle()
 			if Mob.Root.Anchored then
 				Mob.Root.Anchored = false
 			end
-			
+
 			local Player = self:GetClosestPlayer(Mob.Range)
 			local Origin = Mob.Instance:GetPivot().Position
-			
+
 			local isTracking = Player and Player.Character
 			local Destination = isTracking and Player.Character:GetPivot().Position
 			local Torso = isTracking and Player.Character:FindFirstChild("Torso")
-			
+
 			local isTooFarFromSpawn = (Origin - Mob.Origin.Position).Magnitude > Mob.rangeRadius
 			if isTracking and not isTooFarFromSpawn then
 				self:SetNetworkOwner(Player)
-				
+
 				task.wait(1 / 10)
-				
+
 				Mob.isGoingBack = false
 				Mob.isWandering = false
 
@@ -527,26 +537,26 @@ function AIMob:ConnectActiveCycle()
 
 				local Magnitude = (Destination - Origin).Magnitude
 				local Distance = Mob.keepDistance[2] - Magnitude
-				
+
 				AttributeModule:SetAttribute(MobInstance, "Target", Player.UserId)
-				
+
 				local HealthPercentage = Enemy.Health / Enemy.MaxHealth
 				local RetreatVector = (Origin - Destination).Unit * Distance
-				
+
 				-- Determine where mob is going
 				local isMelee = Mob.aiType == "Melee" or not Mob.Ranged
 				local isRanged = Mob.aiType == "Ranged" or Mob.Ranged
-				
+
 				local isAwayFromPlayer = Magnitude > Mob.keepDistance[2]
-				
+
 				local canFocus = isRanged
 					or Mob.tendencyType == "Medium" and HealthPercentage <= Mob.runPercentage
 					or Mob.tendencyType == "Coward"
-				
+
 				local canGoNearPlayer = (isRanged and isAwayFromPlayer) 
 					or Mob.tendencyType == "Brave" and not isRanged
 					or Mob.tendencyType == "Medium" and HealthPercentage > Mob.runPercentage and not isRanged
-				
+
 				if Mob.lookTarget then
 					AttributeModule:SetAttribute(MobInstance, "Focus", true)
 				else
@@ -564,11 +574,11 @@ function AIMob:ConnectActiveCycle()
 			else
 				Mob.Range = nil
 				AttributeModule:SetAttribute(MobInstance, "Focus", false)
-				
+
 				self:GoBack(isTooFarFromSpawn)
 			end
 		end
-		
+
 		task.wait(MOVEMENT_DURATION)
 	end
 end

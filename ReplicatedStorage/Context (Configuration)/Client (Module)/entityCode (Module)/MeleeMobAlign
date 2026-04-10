@@ -3,9 +3,6 @@
 	
 	MeleeMobAlign is a client-sided script that automatically rotates your body rotation to face any
 	nearby mobs when holding a melee weapon (Config.WeaponType == "Melee").
-	
-	This feature can be used, as it greatly improves user experience when
-	fighting any enemy with a melee weapon, especially on platforms like mobile, where shift lock may not be a feature.
 ]]
 
 --> Services
@@ -33,22 +30,25 @@ end
 local function GetNearestMob()
 	local Character = Player.Character
 	if not Character then return end
-	
+
 	local Closest = {MobInstance = nil, Distance = math.huge}
 	for _, MobInstance in CollectionService:GetTagged("Mob") do
+		-- Ensure mob is physically in the world
+		if not MobInstance.Parent then continue end
+
 		local MobConfig = MobInstance:FindFirstChild("MobConfig") and require(MobInstance.MobConfig)
 		local Enemy = MobInstance:FindFirstChild("Enemy")
-		if not MobConfig or not Enemy or Enemy.Health == 0 then continue end
-		
+		if not MobConfig or not Enemy or Enemy.Health <= 0 then continue end
+
 		local Distance = (Character:GetPivot().Position - MobInstance:GetPivot().Position).Magnitude
 		local MaxDistance = MobConfig.FollowDistance or 32
-		
+
 		if (Distance < MaxDistance) and (Distance < Closest.Distance) then
 			Closest.MobInstance = MobInstance
 			Closest.Distance = Distance
 		end
 	end
-	
+
 	return Closest.MobInstance
 end
 
@@ -64,26 +64,35 @@ RunService:BindToRenderStep("MeleeLock", Enum.RenderPriority.Character.Value + 1
 	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid?
 	local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not Humanoid or not HumanoidRootPart then return end
-	
+
 	local Success = false
-	
-	if Focus and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-		local Tool = Character:FindFirstChildOfClass("Tool")
-		local ItemConfig = Tool and require(Tool:FindFirstChild("ItemConfig"))
-		
-		if ItemConfig and ItemConfig.WeaponType == "Melee" then
-			local CurrentRotation = HumanoidRootPart.CFrame.Rotation
-			local GoalRotation = CFrame.lookAt(HumanoidRootPart.Position, Focus:GetPivot().Position).Rotation
-			local _, Y, _ = CurrentRotation:Lerp(GoalRotation, math.clamp(DeltaTime * 30, 0, 1)):ToOrientation()
-			local X, _, Z = CurrentRotation:ToOrientation()
-			
-			Humanoid.AutoRotate = false
-			HumanoidRootPart.CFrame = CFrame.Angles(X, Y, Z) + HumanoidRootPart.Position
-			
-			Success = true
+
+	-- Added check for Focus.Parent to ensure the model hasn't been destroyed
+	if Focus and Focus.Parent and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+
+		-- Double check health in RenderStep to prevent ghost rotation on death lag
+		local Enemy = Focus:FindFirstChild("Enemy")
+		if Enemy and Enemy.Health > 0 then
+			local Tool = Character:FindFirstChildOfClass("Tool")
+			local ItemConfig = Tool and Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig) -- Added safety check for ItemConfig existence
+
+			if ItemConfig and ItemConfig.WeaponType == "Melee" then
+				local CurrentRotation = HumanoidRootPart.CFrame.Rotation
+				local GoalRotation = CFrame.lookAt(HumanoidRootPart.Position, Focus:GetPivot().Position).Rotation
+				local _, Y, _ = CurrentRotation:Lerp(GoalRotation, math.clamp(DeltaTime * 30, 0, 1)):ToOrientation()
+				local X, _, Z = CurrentRotation:ToOrientation()
+
+				Humanoid.AutoRotate = false
+				HumanoidRootPart.CFrame = CFrame.Angles(X, Y, Z) + HumanoidRootPart.Position
+
+				Success = true
+			end
+		else
+			-- If the mob died between the 0.2s interval, stop focusing immediately
+			Focus = nil
 		end
 	end
-	
+
 	if not Success then
 		Humanoid.AutoRotate = true
 	end

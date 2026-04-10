@@ -112,12 +112,19 @@ return function(Tool)
 		---- Callback
 		
 		task.delay(ItemConfig.Cooldown, function()
-			Tool.Enabled = true
-			RequestActivate()
+			-- Ensure tool is still in character before enabling
+			if Tool and Tool.Parent then
+				Tool.Enabled = true
+				RequestActivate()
+			end
 		end)
 	end)
 
 	Tool.Equipped:Connect(function()
+		-- Force state reset to prevent "Stuck" tools
+		Tool.Enabled = true
+		toolSystem.LastDisable = 0
+
 		toolSystem:Equipped()
 	end)
 

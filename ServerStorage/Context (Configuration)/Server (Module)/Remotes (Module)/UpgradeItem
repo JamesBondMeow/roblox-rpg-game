@@ -1,0 +1,224 @@
+--> Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+--> References
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+
+--> Dependencies
+local ContentLibrary = require(ReplicatedStorage.Modules.Shared.ContentLibrary)
+local CountTotalCopies = require(ReplicatedStorage.Modules.Shared.countTotalCopies)
+local GameConfig = require(ReplicatedStorage.GameConfig)
+local GiveItemWithAmount = require(ServerStorage.Modules.Server.giveItemWithAmount)
+local RemoveItemWithAmount = require(ServerStorage.Modules.Server.removeItemWithAmount)
+
+--> Variables
+local Remotes = {}
+local RNG = Random.new()
+
+--------------------------------------------------------------------------------
+
+if not GameConfig.EnabledFeatures.Crafting then
+	return {}
+end
+
+-- Helper: Get the previous tier item name for degradation logic
+local function GetDowngradedItemName(Config, CurrentBaseItemName)
+	-- We look for the recipe where the RESULT (Item[2]) was our current Base Item.
+	-- The BaseItem of THAT recipe is effectively (CurrentTier - 1).
+	for _, Data in ipairs(Config.Anvil) do
+		if Data.Item[2] == CurrentBaseItemName then
+			return Data.BaseItem
+		end
+	end
+	-- If no previous recipe found, we are at the bottom (Level 0). Return the item itself.
+	return CurrentBaseItemName
+end
+
+local function calculateSuccessChance(baseChance, appliedEssences)
+	local totalIncrease = 0
+	if appliedEssences then
+		for _, essenceName in ipairs(appliedEssences) do
+			if essenceName and essenceName ~= "" then
+				local essenceItem = ContentLibrary.Material[essenceName]
+				if essenceItem and essenceItem.Config.SuccessChanceIncrease then
+					totalIncrease += essenceItem.Config.SuccessChanceIncrease
+				end
+			end
+		end
+	end
+	
+	return math.clamp((baseChance or 1) + totalIncrease, 0, 1)
+end
+
+-- Main Function
+-- CompoundItemName: The exact name of the item currently in the player's inventory (e.g., "Iron Sword|Flame_1")
+function Remotes:OnEvent(Player, AnvilModel, CompoundItemName, AppliedEssences) 
+	if not AnvilModel or not CompoundItemName then return false, "Invalid arguments" end
+	if AppliedEssences and typeof(AppliedEssences) ~= "table" then return false, "Invalid essence data" end
+
+	-- Parse Compound Name to separate the base item from its enchantments
+	local split = string.split(CompoundItemName, "|")
+	local BaseItemName = split[1]
+	local enchants = {}
+	for i = 2, #split do table.insert(enchants, split[i]) end
+
+	-- 1. Load Anvil Config
+	local Config = AnvilModel:FindFirstChild("Config") and require(AnvilModel.Config)
+	if not Config or not Config.Anvil then
+		return false, "Anvil configuration missing"
+	end
+
+	-- 2. Find the Upgrade Recipe matching the Base Item
+	local UpgradeData = nil
+	for _, Data in ipairs(Config.Anvil) do
+		if Data.BaseItem == BaseItemName then
+			UpgradeData = Data
+			break
+		end
+	end
+
+	if not UpgradeData then
+		return false, "This item cannot be upgraded here."
+	end
+
+	local pData = PlayerData:FindFirstChild(Player.UserId)
+	-- We find the ContentLibrary data for the Base Item to check type/inventory
+	local BaseContentItem = nil
+	for Category, Items in pairs(ContentLibrary) do
+		if Items[BaseItemName] then
+			BaseContentItem = Items[BaseItemName]
+			break
+		end
+	end
+
+	if not pData or not BaseContentItem then
+		return false, "Item data not found."
+	end
+
+	-- 3. Validation: Does player have the EXACT Enchanted Item?
+	local ItemFolder = pData:FindFirstChild("Items") and pData.Items:FindFirstChild(BaseContentItem.Config.Type)
+	local OwnedItem = ItemFolder and ItemFolder:FindFirstChild(CompoundItemName)
+	if not OwnedItem or OwnedItem.Value < 1 then
+		return false, "You do not own this item."
+	end
+
+	-- 4. Validation: Check Costs (Materials & Gold)
+	local CostTable = UpgradeData.Cost or {}
+
+	-- Check Statistics (Gold, etc.)
+	if CostTable.Statistics then
+		local Stats = pData:FindFirstChild("Stats")
+		for _, StatData in ipairs(CostTable.Statistics) do
+			local StatName = StatData[1]
+			local ReqAmount = StatData[2]
+			local StatObj = Stats and Stats:FindFirstChild(StatName)
+
+			if not StatObj or StatObj.Value < ReqAmount then
+				return false, `Not enough {StatName}.`
+			end
+		end
+	end
+
+	-- Check Materials
+	if CostTable.Material then
+		for _, MatData in ipairs(CostTable.Material) do
+			local MatName = MatData[1]
+			local ReqAmount = MatData[2]
+			local MatItem = ContentLibrary.Material[MatName]
+
+			if not MatItem or CountTotalCopies(MatItem, Player) < ReqAmount then
+				return false, `Not enough {MatName}.`
+			end
+		end
+	end
+
+	-- 5. Validation: Check Essences
+	local requiredEssences = {}
+	if AppliedEssences then
+		for _, essenceName in ipairs(AppliedEssences) do
+			requiredEssences[essenceName] = (requiredEssences[essenceName] or 0) + 1
+		end
+	end
+
+	for essenceName, requiredCount in pairs(requiredEssences) do
+		local essenceItem = ContentLibrary.Material[essenceName]
+		if not essenceItem or CountTotalCopies(essenceItem, Player) < requiredCount then
+			return false, "You do not have enough " .. essenceName
+		end
+	end
+
+	-- === CONSUMPTION PHASE === --
+
+	-- 6. Consume EXACT Item (The item being upgraded is ALWAYS lost, replaced by result)
+	-- Ensure we consume the specific enchanted variant, not the base item!
+	RemoveItemWithAmount(Player, BaseContentItem.Config.Type, CompoundItemName, 1)
+
+	-- 7. Consume Costs
+	if CostTable.Statistics then
+		local Stats = pData:FindFirstChild("Stats")
+		for _, StatData in ipairs(CostTable.Statistics) do
+			local StatObj = Stats:FindFirstChild(StatData[1])
+			StatObj.Value -= StatData[2]
+		end
+	end
+
+	if CostTable.Material then
+		for _, MatData in ipairs(CostTable.Material) do
+			RemoveItemWithAmount(Player, "Material", MatData[1], MatData[2])
+		end
+	end
+
+	-- 8. Consume Essences
+	for essenceName, requiredCount in pairs(requiredEssences) do
+		local essenceItem = ContentLibrary.Material[essenceName]
+		RemoveItemWithAmount(Player, essenceItem.Config.Type, essenceName, requiredCount)
+	end
+
+	-- === ROLL PHASE === --
+
+	local successChance = calculateSuccessChance(UpgradeData.BaseSuccessChance, AppliedEssences)
+	local roll = RNG:NextNumber()
+
+	if roll <= successChance then
+		-- SUCCESS: Give Next Tier Item
+		local TargetCategory = UpgradeData.Item[1]
+		local TargetName = UpgradeData.Item[2]
+
+		-- Concatenate enchantments back onto the upgraded item
+		local AwardedItemName = TargetName
+		if #enchants > 0 then
+			AwardedItemName = AwardedItemName .. "|" .. table.concat(enchants, "|")
+		end
+
+		GiveItemWithAmount(Player, TargetCategory, AwardedItemName, 1)
+
+		return true, `Successfully upgraded to {TargetName}!`
+	else
+		-- FAILURE: Degradation Logic
+		local DegradedItemName = GetDowngradedItemName(Config, BaseItemName)
+
+		-- Find category for degraded item to give it back
+		local DegradedCategory = nil
+		for Cat, Items in pairs(ContentLibrary) do
+			if Items[DegradedItemName] then
+				DegradedCategory = Cat
+				break
+			end
+		end
+
+		if DegradedCategory then
+			-- Concatenate enchantments back onto the degraded item
+			local AwardedDegradedName = DegradedItemName
+			if #enchants > 0 then
+				AwardedDegradedName = AwardedDegradedName .. "|" .. table.concat(enchants, "|")
+			end
+
+			GiveItemWithAmount(Player, DegradedCategory, AwardedDegradedName, 1)
+		end
+
+		return false, `Upgrade failed! Item degraded to {DegradedItemName}.`
+	end
+end
+
+return Remotes

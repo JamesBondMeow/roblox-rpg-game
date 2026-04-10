@@ -1,0 +1,173 @@
+--[[
+	DeveloperProductHandler
+	
+	Handles all developer product purchases, including Deals (Bundles) and Spins.
+]]
+script:SetAttribute("Priority", 1)
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+-- Dependencies
+local DeveloperProductsConfig = require(ReplicatedStorage.Config.DeveloperProducts)
+local GameConfig = require(ReplicatedStorage.GameConfig)
+local ProductLib = require(ReplicatedStorage.Modules.Shared.Product)
+local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
+local GiveItemWithAmount = require(ServerStorage.Modules.Server.giveItemWithAmount)
+
+local PlayerHandlerV2 = require(ServerStorage.Context.Server.gameCode.PlayerHandlerV2)
+local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
+
+-- Merged reward logic
+local productFunctions = {}
+
+-- == HELPER: Grant Items from List ==
+local function grantItemsFromList(player, itemsList)
+	for _, itemInfo in ipairs(itemsList) do
+		local itemType, itemName, amount = itemInfo[1], itemInfo[2], itemInfo[3] or 1
+		GiveItemWithAmount(player, itemType, itemName, amount)
+	end
+end
+
+-- == DEAL LOGIC ==
+local function processDealPurchase(player, productData)
+	print("Processing Deal:", productData.Name)
+
+	-- 1. Mark Deal as Owned
+	ProductLib:UpdateOwnershipCache(player, productData.AssetID, true)
+
+	-- 2. Grant Items
+	if productData.Items then
+		grantItemsFromList(player, productData.Items)
+	end
+
+	-- 3. Gamepass Bundle Specifics
+	if productData.Name == "Gamepass Bundle" then
+		print("Unlocking ALL Gamepasses for", player.Name)
+		local pData = PlayerData:WaitForChild(tostring(player.UserId))
+
+		for _, configProduct in ipairs(GameConfig.Products) do
+			if configProduct.Type == "Gamepass" and configProduct.AssetID ~= 0 then
+				ProductLib:UpdateOwnershipCache(player, configProduct.AssetID, true)
+
+				if PlayerHandlerV2.GrantGamepassItemsOnce then
+					PlayerHandlerV2.GrantGamepassItemsOnce(player, pData, configProduct)
+				end
+			end
+		end
+
+		-- Force update stats/buffs immediately
+		-- We add a task.wait() to ensure attributes propagate internally before calculation
+		task.spawn(function()
+			task.wait(0.1) 
+			if PlayerHandlerV2.ApplyAllOwnedGamepassAttributes then
+				PlayerHandlerV2.ApplyAllOwnedGamepassAttributes(player, player.Character)
+			end
+		end)
+	end
+
+	return true
+end
+
+-- == LOGIC FOR GENERAL DEVELOPER PRODUCTS ==
+local function grantGeneralReward(player, rewardData)
+	local pData = PlayerData:WaitForChild(tostring(player.UserId), 15)
+	if not pData then return false end
+
+	if rewardData.RewardType == "Stat" then
+		local stat = pData.Stats:FindFirstChild(rewardData.StatName)
+		if stat then stat.Value += rewardData.Amount return true end
+	elseif rewardData.RewardType == "Item" then
+		GiveItemWithAmount(player, rewardData.ItemType, rewardData.ItemName, rewardData.Amount)
+		return true
+	end
+	return false
+end
+
+-- == LOGIC FOR SPIN DEVELOPER PRODUCTS ==
+local function addSpins(player, amount)
+	local pData = PlayerData:WaitForChild(tostring(player.UserId), 15)
+	if not pData then return false end
+	local spins = pData:FindFirstChild("Spins")
+	if spins then spins.Value += amount return true end
+	return false
+end
+
+productFunctions[3428274012] = function(player) return addSpins(player, 1) end
+productFunctions[3428274187] = function(player) return addSpins(player, 3) end
+productFunctions[3428274369] = function(player) return addSpins(player, 10) end
+
+-- == MAIN RECEIPT PROCESSING FUNCTION ==
+local function processReceipt(receiptInfo)
+	local playerId = receiptInfo.PlayerId
+	local productId = receiptInfo.ProductId
+	local player = Players:GetPlayerByUserId(playerId)
+	if not player then return Enum.ProductPurchaseDecision.NotProcessedYet end
+
+	-- Check Deals
+	for _, product in ipairs(GameConfig.Products) do
+		if product.Type == "Deal" and product.AssetID == productId then
+			local success, result = pcall(processDealPurchase, player, product)
+			if success and result then return Enum.ProductPurchaseDecision.PurchaseGranted end
+		end
+	end
+
+	-- 2. Check for Dedicated Functions (Spins)
+	local handler = productFunctions[productId]
+	if handler then
+		local success, result = pcall(handler, player)
+		if success and result then return Enum.ProductPurchaseDecision.PurchaseGranted end
+	end
+
+	-- 3. Check General DeveloperProductsConfig
+	local rewardData = DeveloperProductsConfig[productId]
+	if rewardData then
+		local success, result = pcall(grantGeneralReward, player, rewardData)
+		if success and result then return Enum.ProductPurchaseDecision.PurchaseGranted end
+	end
+
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
+MarketplaceService.ProcessReceipt = processReceipt
+
+-- == PURCHASE ANNOUNCEMENTS ==
+local ALERT_COLOR = Color3.fromRGB(255, 215, 0)
+
+local function AnnouncePurchase(player, id, infoType)
+	-- Wrap in task.spawn so GetProductInfo doesn't yield/pause other server processes
+	task.spawn(function()
+		local success, productInfo = pcall(function()
+			return MarketplaceService:GetProductInfo(id, infoType)
+		end)
+
+		if success and productInfo then
+			-- Format the string using RichText bolding
+			local text = string.format("%s has supported the game by purchasing %s for \u{E002}%d!", player.DisplayName, productInfo.Name, productInfo.PriceInRobux or 0)
+
+			-- Fire to ChatAlert
+			EventModule:FireAllClients("ChatAlert", ALERT_COLOR, text)
+		end
+	end)
+end
+
+-- Hook into Gamepass Purchases
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamepassId, wasPurchased)
+	if wasPurchased then
+		AnnouncePurchase(player, gamepassId, Enum.InfoType.GamePass)
+	end
+end)
+
+-- Hook into Developer Product / Deal Purchases
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	if wasPurchased then
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			AnnouncePurchase(player, productId, Enum.InfoType.Product)
+		end
+	end
+end)
+
+return {}

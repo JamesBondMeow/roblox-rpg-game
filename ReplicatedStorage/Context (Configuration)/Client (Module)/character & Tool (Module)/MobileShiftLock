@@ -1,7 +1,7 @@
 --[[
 	MobileShiftLock
 	
-	Handles mobile shiftlock.
+	Handles mobile shiftlock and PC keybind.
 ]]
 
 --> Services
@@ -18,7 +18,6 @@ local PlayerGui = Player:WaitForChild("PlayerGui")
 
 --> Dependencies
 local GameConfig = require(ReplicatedStorage.GameConfig)
-
 
 --> References
 local Camera = workspace.CurrentCamera
@@ -41,14 +40,13 @@ local Active = false
 
 --------------------------------------------------------------------------------
 
-if not GameConfig.MobileShiftLock or not UserInputService.TouchEnabled then
+if not GameConfig.MobileShiftLock then
 	return {}
 end
 
 --> GUI
+-- We create the GUI but don't parent it yet. We decide based on the device below.
 local ShiftLockGui = script.Mobile:Clone()
-ShiftLockGui.Parent = PlayerGui
-
 local Button = ShiftLockGui:WaitForChild("ImageButton")
 
 local function UpdateImage(STATE)
@@ -56,7 +54,9 @@ local function UpdateImage(STATE)
 end
 
 local function UpdateAutoRotate(BOOL)
-	Humanoid.AutoRotate = BOOL
+	if Humanoid then
+		Humanoid.AutoRotate = BOOL
+	end
 end
 
 local function GetUpdatedCameraCFrame(ROOT, CAMERA)
@@ -68,40 +68,52 @@ local function EnableShiftlock()
 		Root.CFrame = GetUpdatedCameraCFrame(Root, Camera)
 	end
 	Camera.CFrame = Camera.CFrame * ENABLED_OFFSET
-	
+
 	UpdateAutoRotate(false)
 	UpdateImage("ON")
 end
 
 local function DisableShiftlock()
 	Camera.CFrame = Camera.CFrame * DISABLED_OFFSET
-	
+
 	if Active then
 		Active:Disconnect()
 		Active = false
 	end
-	
+
 	UpdateAutoRotate(true)
 	UpdateImage("OFF")
 end
 
 UpdateImage("OFF")
 
-function RequestShiftLock()
+-- Toggle function handles the state switch
+local function ToggleShiftLock()
 	local IsNotActive = not Active
 	if IsNotActive then
 		Active = RunService.RenderStepped:Connect(function()
 			EnableShiftlock()
 		end)
-	elseif not IsNotActive then
+	else
 		DisableShiftlock()
 	end
 end
 
-local ShiftLockButton = ContextActionService:BindAction("ShiftLOCK", RequestShiftLock, false, "On")
-ContextActionService:SetPosition("ShiftLOCK", UDim2.new(0.8, 0, 0.8, 0))
+-- Input Handler to ensure key press only toggles once (on Begin)
+local function HandleInput(ActionName, InputState, InputObject)
+	if InputState == Enum.UserInputState.Begin then
+		ToggleShiftLock()
+	end
+end
 
-Button.Activated:Connect(RequestShiftLock)
+-- Bind Left Shift for PC players
+ContextActionService:BindAction("PC_ShiftLock", HandleInput, false, Enum.KeyCode.LeftShift)
+
+-- Only show the Button GUI if the player is on a Touch device (Mobile)
+if UserInputService.TouchEnabled then
+	ShiftLockGui.Parent = PlayerGui
+	Button.Activated:Connect(ToggleShiftLock)
+end
 
 local function OnCharacterAdded(NewCharacter)
 	Character = NewCharacter

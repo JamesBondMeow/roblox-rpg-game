@@ -3,9 +3,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 --> Player
 local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
 
 --> References
 local ProjectileCache = workspace:WaitForChild("Temporary"):WaitForChild("ProjectileCache")
@@ -13,72 +16,146 @@ local Modules = ReplicatedStorage.Modules
 
 --> Dependencies
 local GameConfig = require(ReplicatedStorage.GameConfig)
-
 local ToolSystem = require(ReplicatedStorage.Modules.Client.ToolSystem)
 local PartCache = require(ReplicatedStorage.Context.Shared.Casting.PartCache)
 local Casting = require(ReplicatedStorage.Context.Shared.Casting)
 local AttributeModule = require(ReplicatedStorage.Modules.Shared.Attribute)
 local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
-
 local RbxUtility = require(Modules.Shared.RbxUtility)
 local _Animation = require(Modules.Client.Animation)
 local SFX = require(Modules.Shared.SFX)
 
 --------------------------------------------------------------------------------
---------------------------------------------------------------------------------
 
 return function(Tool)
 	local Handle = Tool:WaitForChild("Handle")
-	local CastPoint = Handle:WaitForChild("CastPoint") -- The projectiles start from this point
+	local CastPoint = Handle:FindFirstChild("CastPoint") or Handle
 
 	local ItemConfig = require(Tool:WaitForChild("ItemConfig"))
+	local SuiteType = ItemConfig.Suite[1]
 	local Configuration = ItemConfig.Suite[2]
 
-	local ActiveSlashTrack
 	local Caster = Casting.new()
 	local Random = Random.new()
-	
+
 	local toolSystem = ToolSystem.new(Tool, false, true)
-	
+
 	-- Character
-	local Character = Player.Character or Player.CharacterAdded:Wait()
+	local Character
+	local Humanoid
+	local Animator
 
-	local Humanoid = Character:WaitForChild("Humanoid") :: Humanoid
-	local Animator = Humanoid:WaitForChild("Animator") :: Animator
+	-- Teleport Charging Variables
+	local ChargeVFX = nil
+	local IsCharging = false
+	local ChargeTask = nil
+	local NextUseTime = 0 -- Track cooldown locally
 	
-	---- CASTER LISTENERS ----------------------------------------------------------
+	-- Teleport Marker Variables
+	local TeleportMarker = nil
+	local MarkerRenderName = "TeleportMarker_" .. Tool.Name .. "_" .. tostring(math.random(10000, 99999))
 
-	local Interacted = {}
-	Casting:DefaultHookRayHit(Caster, function(Projectile, RaycastResult, Ended, Pierces, Model, CanHit)
-		if not CanHit then
-			return
+	local function CleanupMarker()
+		if TeleportMarker then
+			RunService:UnbindFromRenderStep(MarkerRenderName)
+			TeleportMarker:Destroy()
+			TeleportMarker = nil
+		end
+	end
+	
+	local function PromptLocationName()
+		if PlayerGui:FindFirstChild("TeleportPrompt") then return end
+
+		local SG = Instance.new("ScreenGui", PlayerGui)
+		SG.Name = "TeleportPrompt"
+
+		local Frame = Instance.new("Frame", SG)
+		Frame.Size = UDim2.new(0, 300, 0, 130)
+		Frame.Position = UDim2.new(0.5, -150, 0.5, -50)
+		Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		Frame.BackgroundTransparency = 0.1
+		Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
+
+		local Title = Instance.new("TextLabel", Frame)
+		Title.Size = UDim2.new(1, 0, 0, 30)
+		Title.BackgroundTransparency = 1
+		Title.Text = "Set Teleport Location Name"
+		Title.TextColor3 = Color3.new(1,1,1)
+		Title.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		Title.TextSize = 16
+
+		local Box = Instance.new("TextBox", Frame)
+		Box.Size = UDim2.new(0.8, 0, 0, 40)
+		Box.Position = UDim2.new(0.1, 0, 0.25, 0)
+		Box.PlaceholderText = "E.g. Origins Spawn"
+		Box.Text = ""
+		Box.TextColor3 = Color3.new(1, 1, 1)
+		Box.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+		Instance.new("UICorner", Box).CornerRadius = UDim.new(0, 5)
+
+		local ConfirmBtn = Instance.new("TextButton", Frame)
+		ConfirmBtn.Size = UDim2.new(0.35, 0, 0, 35)
+		ConfirmBtn.Position = UDim2.new(0.1, 0, 0.65, 0)
+		ConfirmBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 60)
+		ConfirmBtn.Text = "Confirm"
+		ConfirmBtn.TextColor3 = Color3.new(1, 1, 1)
+		ConfirmBtn.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		Instance.new("UICorner", ConfirmBtn).CornerRadius = UDim.new(0, 5)
+
+		local CancelBtn = Instance.new("TextButton", Frame)
+		CancelBtn.Size = UDim2.new(0.35, 0, 0, 35)
+		CancelBtn.Position = UDim2.new(0.55, 0, 0.65, 0)
+		CancelBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+		CancelBtn.Text = "Cancel"
+		CancelBtn.TextColor3 = Color3.new(1, 1, 1)
+		CancelBtn.FontFace = Font.new("rbxasset://fonts/families/Guru.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		Instance.new("UICorner", CancelBtn).CornerRadius = UDim.new(0, 5)
+
+		local function Submit()
+			if Box.Text ~= "" then
+				local success = EventModule:InvokeServer("SetPersonalTeleportLocation", Tool, Box.Text)
+				if success then
+					SFX:Play2D(GameConfig.CraftSFX[1], {Volume = GameConfig.CraftSFX[2]})
+
+					-- Force unequip the tool so the inventory syncs flawlessly
+					if Humanoid then
+						Humanoid:UnequipTools()
+					end
+				end
+			end
+			SG:Destroy()
 		end
 
+		ConfirmBtn.Activated:Connect(Submit)
+		CancelBtn.Activated:Connect(function() SG:Destroy() end)
+		Box.FocusLost:Connect(function(enterPressed)
+			if enterPressed then Submit() end
+		end)
+
+		Box:CaptureFocus()
+	end
+
+	---- CASTER LISTENERS ----------------------------------------------------------
+	local Interacted = {}
+	Casting:DefaultHookRayHit(Caster, function(Projectile, RaycastResult, Ended, Pierces, Model, CanHit)
+		if not CanHit then return end
 		local isMob = Model and CollectionService:HasTag(Model, "Mob")
 		if isMob then
 			local Enemy = isMob and Model:FindFirstChildOfClass("Humanoid")
-
-			-- Multishot doesn't hit the same mob multiple times
-			if table.find(Interacted, Model) then
-				return
-			end
+			if table.find(Interacted, Model) then return end
 			table.insert(Interacted, Model)
 			task.delay(ItemConfig.Cooldown * 0.8, function()
 				table.remove(Interacted, table.find(Interacted, Model))
 			end)
-
 			if Enemy and Enemy.Health > 0 then
 				EventModule:FireServer("PlayerUsedSpell", Tool, Model)
 			end
 		end
 	end)
-
 	Casting:DefaultHookLengthChanged(Caster)
 	Casting:DefaultHookRayTerminating(Caster)
 
 	---- PROJECTILE CASTING --------------------------------------------------------
-	-- Code here creates new projectiles, assigns them a 3d mesh part, and initially updates them.
-
 	local function GetMouseHit(): Vector3
 		local RaycastParams = RaycastParams.new()
 		RaycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -87,32 +164,126 @@ return function(Tool)
 			workspace.Zones, workspace.Teleports
 		}
 		RaycastParams.RespectCanCollide = true
-
 		local MouseLocation = UserInputService:GetMouseLocation()
 		local ViewportRay = workspace.CurrentCamera:ViewportPointToRay(MouseLocation.X, MouseLocation.Y)
 		local RaycastResult = workspace:Raycast(ViewportRay.Origin, ViewportRay.Direction * 1e3, RaycastParams)
-
 		return RaycastResult and RaycastResult.Position or (ViewportRay.Origin + ViewportRay.Direction.Unit * 1e3)
 	end
 
 	local function CastProjectile()
 		local Origin = CastPoint.WorldPosition
-		local Direction = (GetMouseHit() - Origin).Unit -- Normalizes the vector length to 1 stud
-
-		local Projectile = Caster:Cast(Player, Tool, Origin, Direction, Direction.Unit * Configuration.Velocity, Configuration.Acceleration, nil, Configuration.Pierce) -- This function creates the projectile on this client
-		if Projectile then -- If the pool's quota for this Caster is maxed out, a Projectile object may not be returned. Just mentioning!
-			Caster:Share(Origin, Direction, Direction.Unit * Configuration.Velocity, Configuration.Acceleration, Configuration.Projectile) -- This function shares this projectile with other clients to be created on their side
-
+		local Direction = (GetMouseHit() - Origin).Unit
+		local Projectile = Caster:Cast(Player, Tool, Origin, Direction, Direction.Unit * Configuration.Velocity, Configuration.Acceleration, nil, Configuration.Pierce)
+		if Projectile then
+			Caster:Share(Origin, Direction, Direction.Unit * Configuration.Velocity, Configuration.Acceleration, Configuration.Projectile)
 			local Cache = PartCache.new(ReplicatedStorage.Assets.Projectiles[Configuration.Projectile], nil, ProjectileCache)
 			local CastingMesh = Cache:GetPart()
-
 			Projectile.UserData.CastingMesh = CastingMesh
-			Projectile:Update() -- Initially update the projectile after the trail is cleared, so it will appear for the first frame, and the trail will reset so it won't trail from far away to here
+			Projectile:Update()
 		end
 	end
 
 	--------------------------------------------------------------------------------
-	
+
+	-- TELEPORT SPELL LOGIC
+	local function CleanupChargeVFX()
+		if ChargeVFX then
+			for _, p in pairs(ChargeVFX:GetChildren()) do
+				if p:IsA("ParticleEmitter") then p.Enabled = false end
+			end
+			game.Debris:AddItem(ChargeVFX, 0.5)
+			ChargeVFX = nil
+		end
+	end
+
+	local function CompleteTeleport()
+		IsCharging = false
+		NextUseTime = os.clock() + ItemConfig.Cooldown -- Record end of cooldown
+		CleanupChargeVFX()
+
+		local CanActivate = EventModule:InvokeServer("PlayerSpentMana", Tool.Name)
+		if not CanActivate then	return end
+
+		-- Cooldown Logic
+		Tool.Enabled = false
+
+		-- Fire Server Event
+		EventModule:FireServer("PlayerUsedSpell", Tool)
+		EventModule:Fire("PlayerUsedWeapon", ItemConfig.Cooldown, Tool)
+
+		task.delay(ItemConfig.Cooldown, function()
+			Tool.Enabled = true
+		end)
+	end
+
+	local function StartCharge()
+		IsCharging = true
+
+		-- Play Animation (Hold pose)
+		toolSystem:Activated() 
+
+		-- Create VFX container
+		local Root = Character:FindFirstChild("HumanoidRootPart")
+		if Root then
+			ChargeVFX = Instance.new("Part")
+			ChargeVFX.Name = "ChargeVFX"
+			ChargeVFX.Transparency = 1
+			ChargeVFX.CanCollide = false
+			ChargeVFX.Anchored = false
+			ChargeVFX.Size = Vector3.new(1,1,1)
+
+			local Weld = Instance.new("Weld")
+			Weld.Part0 = Root
+			Weld.Part1 = ChargeVFX
+			Weld.Parent = ChargeVFX
+
+			ChargeVFX.Parent = Root
+
+			local Prefab = ReplicatedStorage.Assets.Effects:FindFirstChild("Teleport")
+			if Prefab then
+				for _, child in pairs(Prefab:GetChildren()) do
+					local p = child:Clone()
+					p.Parent = ChargeVFX
+					p.Enabled = true
+				end
+			else
+				-- Fallback Visual: Growing Sphere
+				local Sphere = Instance.new("Part")
+				Sphere.Shape = Enum.PartType.Ball
+				Sphere.Material = Enum.Material.Neon
+				Sphere.Color = Color3.fromRGB(100, 200, 255)
+				Sphere.Transparency = 0.5
+				Sphere.Anchored = false
+				Sphere.CanCollide = false
+				Sphere.Size = Vector3.new(1, 1, 1)
+				Sphere.CFrame = Root.CFrame
+
+				local WeldSphere = Instance.new("WeldConstraint")
+				WeldSphere.Part0 = Root
+				WeldSphere.Part1 = Sphere
+				WeldSphere.Parent = Sphere
+
+				Sphere.Parent = ChargeVFX
+
+				-- Animate growth
+				local CastTime = Configuration.CastTime or 1.5
+				local Tween = TweenService:Create(Sphere, TweenInfo.new(CastTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = Vector3.new(10, 10, 10), Transparency = 1})
+				Tween:Play()
+			end
+		end
+
+		-- Start the Timer
+		local CastTime = Configuration.CastTime or 1.5
+
+		ChargeTask = task.delay(CastTime, function()
+			if IsCharging then
+				CompleteTeleport()
+			end
+		end)
+	end
+
+	--------------------------------------------------------------------------------
+
 	local function RequestActivate()
 		if ItemConfig.Autofire and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
 			if Tool:IsDescendantOf(workspace) then
@@ -120,56 +291,158 @@ return function(Tool)
 			end
 		end
 	end
-	
+
 	Tool.Activated:Connect(function()
-		if not Tool.Enabled or Humanoid.Health <= 0 then
-			return
-		end
-		
-		local CanActivate = EventModule:InvokeServer("PlayerSpentMana", Tool.Name)
-		if not CanActivate then 
-			return 
-		end
+		if not Tool.Enabled or Humanoid.Health <= 0 then return end
+		if os.clock() < NextUseTime then return end -- Block lag/bypass activation
 
-		Tool.Enabled = false
+		if SuiteType == "Teleport" or SuiteType == "PersonalTeleport" then
+			if not IsCharging then
+				if SuiteType == "PersonalTeleport" then
+					local attr = Tool:GetAttribute("Enchantments")
+					if not attr or not string.find(attr, ",") then
+						warn("No destination set! Press R to set one.")
+						return
+					end
+				end
 
-		---- Spell miscellaneous & activated
-		
-		toolSystem:Activated()
-
-		EventModule:Fire("PlayerUsedWeapon", ItemConfig.Cooldown, Tool.Name)
-		if ItemConfig.Throwable then
-			task.spawn(CastProjectile)
+				StartCharge()
+			end
 		else
-			EventModule:FireServer("PlayerUsedSpell", Tool)
-		end
+			-- Standard Projectile/Instant Spell logic
+			local CanActivate = EventModule:InvokeServer("PlayerSpentMana", Tool.Name)
+			if not CanActivate then return end
 
-		for _, ParticleEmitter: ParticleEmitter in Tool:GetDescendants() do
-			if ParticleEmitter:IsA("ParticleEmitter") then
-				ParticleEmitter.Enabled = false
+			Tool.Enabled = false
+			toolSystem:Activated()
+
+			-- Pass Tool instance instead of Tool.Name
+			EventModule:Fire("PlayerUsedWeapon", ItemConfig.Cooldown, Tool)
+			NextUseTime = os.clock() + ItemConfig.Cooldown -- Record standard spell cooldown
+
+			if ItemConfig.Throwable then
+				task.spawn(CastProjectile)
+			else
+				EventModule:FireServer("PlayerUsedSpell", Tool)
+			end
+
+			for _, P in Tool:GetDescendants() do
+				if P:IsA("ParticleEmitter") then P.Enabled = false end
+			end
+
+			task.delay(ItemConfig.Cooldown, function()
+				Tool.Enabled = true
+				for _, P in Tool:GetDescendants() do
+					if P:IsA("ParticleEmitter") then P.Enabled = true end
+				end
+				RequestActivate()
+			end)
+		end
+	end)
+
+	-- Handle Key Release for Teleport Charge (Cancel)
+	Tool.Deactivated:Connect(function()
+		if SuiteType == "Teleport" or SuiteType == "PersonalTeleport" then
+			if IsCharging then
+				IsCharging = false
+				CleanupChargeVFX()
+
+				if ChargeTask then
+					task.cancel(ChargeTask)
+					ChargeTask = nil
+				end
 			end
 		end
+	end)
 
-		---- Callback
+	local setLocationConn
+	Tool.Equipped:Connect(function()
+		-- Dynamically fetch the ALIVE character
+		Character = Tool.Parent
+		Humanoid = Character and Character:FindFirstChild("Humanoid")
+		Animator = Humanoid and Humanoid:FindFirstChild("Animator")
 
-		task.delay(ItemConfig.Cooldown, function()
+		-- Force state reset to prevent "Stuck" tools
+		toolSystem:Equipped()
+
+		-- Only enable the tool if the cooldown has actually finished
+		local remainingCooldown = NextUseTime - os.clock()
+		if remainingCooldown > 0 then
+			Tool.Enabled = false
+			task.delay(remainingCooldown, function()
+				if Tool.Parent == Character then Tool.Enabled = true end
+			end)
+		else
 			Tool.Enabled = true
+		end
 
-			for _, ParticleEmitter: ParticleEmitter in Tool:GetDescendants() do
-				if ParticleEmitter:IsA("ParticleEmitter") then
-					ParticleEmitter.Enabled = true
+		toolSystem.LastDisable = 0
+
+		if SuiteType == "Teleport" or SuiteType == "PersonalTeleport" then
+			if SuiteType == "PersonalTeleport" then
+				setLocationConn = UserInputService.InputBegan:Connect(function(input, gpe)
+					if gpe then return end
+					if input.KeyCode == Enum.KeyCode.R then
+						PromptLocationName()
+					end
+				end)
+			end
+
+			-- MARKER LOGIC
+			local TargetPos = nil
+			local DisplayName = Tool.Name
+
+			if SuiteType == "Teleport" then
+				TargetPos = Configuration.Destination
+			elseif SuiteType == "PersonalTeleport" then
+				local attr = Tool:GetAttribute("Enchantments")
+				if attr and attr ~= "" then
+					local split = string.split(attr, ",")
+					local coordsStr = nil
+					for _, str in ipairs(split) do
+						if string.find(str, "_") then
+							coordsStr = str
+						else
+							DisplayName = str
+						end
+					end
+					if coordsStr then
+						local axes = string.split(coordsStr, "_")
+						TargetPos = Vector3.new(tonumber(axes[1]), tonumber(axes[2]), tonumber(axes[3]))
+					end
 				end
 			end
 
-			RequestActivate()
-		end)
-	end)
+			if TargetPos then
+				TeleportMarker = ReplicatedStorage.Assets.Scripts.QuestPosition:Clone()
+				TeleportMarker.Name = "TeleportMarker"
+				TeleportMarker.QuestBillboard.Canvas.Display.Text = DisplayName
+				TeleportMarker.QuestBillboard.Canvas.GroupColor3 = Color3.fromRGB(170, 85, 255)
+				TeleportMarker.Position = TargetPos
+				TeleportMarker.Parent = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Client") or workspace
 
-	Tool.Equipped:Connect(function()
-		toolSystem:Equipped()
+				RunService:BindToRenderStep(MarkerRenderName, Enum.RenderPriority.Character.Value + 10, function()
+					if Character and Character:FindFirstChild("HumanoidRootPart") and TeleportMarker and TeleportMarker:FindFirstChild("QuestBillboard") then
+						local RootPart = Character.HumanoidRootPart
+						local Distance = (RootPart.Position - TargetPos).Magnitude
+						TeleportMarker.QuestBillboard.Enabled = Distance > 25
+						TeleportMarker.QuestBillboard.Distance.Text = math.round(Distance) .. " studs"
+					end
+				end)
+			end
+		end
 	end)
 
 	Tool.Unequipped:Connect(function()
 		toolSystem:Unequipped()
+		if setLocationConn then setLocationConn:Disconnect() setLocationConn = nil end
+		CleanupMarker() -- Clears the marker when deselected
+	end)
+
+	Tool.AncestryChanged:Connect(function(_, newParent)
+		if newParent == nil then
+			if setLocationConn then setLocationConn:Disconnect() setLocationConn = nil end
+			CleanupMarker() -- Safely unbinds if dropped, traded, or consumed
+		end
 	end)
 end

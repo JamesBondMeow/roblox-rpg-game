@@ -1,0 +1,563 @@
+--[[
+	Manually define all mob information for the Index UI here.
+	The script will automatically generate categories and mob entries from this data.
+]]
+
+local module = {
+	-- Define the order of the locations.
+	CategoryOrder = {
+		"Origins",
+		"Goblin Cave",
+		"Harpy Dens",
+		"Ruin's Pass",
+		"Pirate Cove",
+	},
+
+	-- Define the mobs, grouped by their location name.
+	Mobs = {
+		["Origins"] = {
+			{
+				Name = "Bandit",
+				Type = nil,
+				Race = "Human",
+				Health = 20,
+				Damage = 10,
+				Speed = 16,
+				Defense = "0%",
+				Location = "Origins Forest",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "10-20", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "5-10", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Tattered Cloth", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Bandit",
+				ModelCFrame = CFrame.new(0, 0, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Bandit Archer",
+				Type = nil,
+				Race = "Human",
+				Health = 40,
+				Damage = 15,
+				Speed = 16,
+				Defense = "0%",
+				Location = "Origins Forest",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "20-40", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "10-20", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Tattered Cloth", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Bandit Archer",
+				ModelCFrame = CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Bandit Leader",
+				Type = nil,
+				Race = "Human",
+				Health = 350,
+				Damage = 10,
+				Speed = 18,
+				Defense = "0%",
+				Location = "Origins Forest",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "100-200", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "32-45", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "Magic Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "Upgrade Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "[☆3] Essence", Amount = "1", Chance = "1%"},
+					{Type = "Item", Name = "Leader's Eyepatch", Amount = "1", Chance = "0.33%*"},
+				},
+				
+				Model = "Bandit Leader",
+				ModelCFrame = CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Bandit Officer",
+				Type = nil,
+				Race = "Human",
+				Health = 70,
+				Damage = 20,
+				Speed = 16,
+				Defense = "0%",
+				Location = "Origins Village",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "25-50", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "15-30", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Tattered Cloth", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Stone Sword", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Bandit Officer",
+				ModelCFrame = CFrame.new(0, 0, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Rare Bandit Thug",
+				Type = nil,
+				Race = "Human",
+				Health = 40,
+				Damage = 20,
+				Speed = 18,
+				Defense = "2.5%",
+				Location = "Origins Forest",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "40-80", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "20-40", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "5", Chance = "25%"},
+					{Type = "Item", Name = "Tattered Cloth", Amount = "1", Chance = "10%"},
+				},
+				
+				Model = "Rare Bandit Thug",
+				ModelCFrame = CFrame.new(0, 0, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Elite Bandit Thug",
+				Type = nil,
+				Race = "Human",
+				Health = 80,
+				Damage = 40,
+				Speed = 18,
+				Defense = "5%",
+				Location = "Origins Forest",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "80-160", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "40-80", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "10", Chance = "25%"},
+					{Type = "Item", Name = "Tattered Cloth", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Stone Sword", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Soul Fragment", Amount = "1", Chance = "0.125%"},
+				},
+
+				Model = "Elite Bandit Thug",
+				ModelCFrame = CFrame.new(0, 0, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+		},
+
+		["Goblin Cave"] = {
+			{
+				Name = "Cave Goblin",
+				Type = nil,
+				Race = "Goblin",
+				Health = 75,
+				Damage = 30,
+				Speed = 18,
+				Defense = "0%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "37-75", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "14-29", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "1%"},
+				},
+				
+				Model = "Cave Goblin",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Cave Hobgoblin",
+				Type = nil,
+				Race = "Goblin",
+				Health = 50,
+				Damage = 35,
+				Speed = 18,
+				Defense = "0%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "37-75", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "14-29", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Cave Hobgoblin",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Goblin Berserker",
+				Type = nil,
+				Race = "Goblin",
+				Health = 125,
+				Damage = 45,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "48-97", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "19-38", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Goblin Berserker",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Rare Cave Goblin",
+				Type = nil,
+				Race = "Goblin",
+				Health = 150,
+				Damage = 60,
+				Speed = 20,
+				Defense = "2.5%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "74-150", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "28-58", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "10%"},
+				},
+				
+				Model = "Rare Cave Goblin",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Goblin Officer",
+				Type = nil,
+				Race = "Goblin",
+				Health = 215,
+				Damage = 60,
+				Speed = 18,
+				Defense = "0%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "70-117", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "38-60", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Apple", Amount = "5", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Officer's Badge", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Iron Sword", Amount = "1", Chance = "1%"},
+				},
+				
+				Model = "Goblin Officer",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Elite Cave Goblin",
+				Type = nil,
+				Race = "Goblin",
+				Health = 300,
+				Damage = 120,
+				Speed = 20,
+				Defense = "5%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "148-300", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "56-116", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Bronze Sword", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Iron Sword", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Soul Fragment", Amount = "1", Chance = "0.25%"},
+				},
+				
+				Model = "Elite Cave Goblin",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Goblin Commander",
+				Type = "Mini-Boss",
+				Race = "Goblin",
+				Health = 750,
+				Damage = 30,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Goblin Cave",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "200-300", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "50-100", Chance = "100%"},
+					{Type = "Item", Name = "[☆1] Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "Upgrade Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "Magic Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "Gold Ore", Amount = "2", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Goblin Ear", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "[☆3] Essence", Amount = "3", Chance = "10%"},
+					{Type = "Item", Name = "Gold Sword", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Commander's Eye", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Goblin Commander",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+		},
+
+		["Harpy Dens"] = {
+			{
+				Name = "Harpy Scavenger",
+				Type = nil,
+				Race = "Creature",
+				Health = 335,
+				Damage = 70,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Lower Harpy Den",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "96-143", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "65-98", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Harpy Feather", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Platinum Sword", Amount = "1", Chance = "1%"},
+				},
+				
+				Model = "Harpy Scavenger",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Rare Harpy Scavenger",
+				Type = nil,
+				Race = "Creature",
+				Health = 670,
+				Damage = 140,
+				Speed = 22,
+				Defense = "2.5%",
+				Location = "Lower Harpy Den",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "192-286", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "130-196", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Harpy Feather", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Platinum Sword", Amount = "1", Chance = "10%"},
+				},
+
+				Model = "Rare Harpy Scavenger",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Elite Harpy Scavenger",
+				Type = nil,
+				Race = "Creature",
+				Health = 1340,
+				Damage = 280,
+				Speed = 22,
+				Defense = "5%",
+				Location = "Lower Harpy Den",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "384-572", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "260-392", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Harpy Feather", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Platinum Sword", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Diamond Sword", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Soul Fragment", Amount = "1", Chance = "0.5%"},
+				},
+
+				Model = "Elite Harpy Scavenger",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Harpy Screecher",
+				Type = nil,
+				Race = "Creature",
+				Health = 300,
+				Damage = 85,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Lower Harpy Den",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "96-143", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "65-98", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Harpy Feather", Amount = "1", Chance = "5%"},
+				},
+				
+				Model = "Harpy Screecher",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Harpy Brute",
+				Type = nil,
+				Race = "Creature",
+				Health = 400,
+				Damage = 100,
+				Speed = 22,
+				Defense = "0%",
+				Location = "Harpy Brute Den",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "112-167", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "80-126", Chance = "100%"},
+					{Type = "Item", Name = "[☆2] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Harpy Feather", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Diamond Sword", Amount = "1", Chance = "1%"},
+				},
+				
+				Model = "Harpy Brute",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+		},
+		
+		["Ruin's Pass"] = {
+			{
+				Name = "Green Slime",
+				Type = nil,
+				Race = "Spirit",
+				Health = 500,
+				Damage = 125,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Ruin's Pass Grove/Deposit/Pillars",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "150-200", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "100-150", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Slime Goo", Amount = "1", Chance = "5%"},
+				},
+
+				Model = "Green Slime",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Shroomer",
+				Type = nil,
+				Race = "Spirit",
+				Health = 450,
+				Damage = 100,
+				Speed = 20,
+				Defense = "0%",
+				Location = "Ruin's Pass Grove/Deposit/Pillars",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "150-200", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "100-150", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Red Mushroom", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Green Mushroom", Amount = "1", Chance = "1%"},
+					{Type = "Item", Name = "Blue Mushroom", Amount = "1", Chance = "0.1%"},
+				},
+
+				Model = "Shroomer",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Rock Golem",
+				Type = nil,
+				Race = "Spirit",
+				Health = 1200,
+				Damage = 300,
+				Speed = 22,
+				Defense = "10%",
+				Location = "Ruin's Pass Upper Grove",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "200-300", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "150-250", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "[☆2] Essence", Amount = "1", Chance = "10%"},
+					{Type = "Item", Name = "Golem Core", Amount = "1", Chance = "5%"},
+					{Type = "Item", Name = "Ruby Ore", Amount = "3", Chance = "1%"},
+				},
+
+				Model = "Rock Golem",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Blue Slime",
+				Type = nil,
+				Race = "Spirit",
+				Health = 800,
+				Damage = 200,
+				Speed = 20,
+				Defense = "2.5%",
+				Location = "Ruin's Pass Grove/Deposit/Pillars/Upper Grove",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "300-400", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "200-300", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "[☆4] Apple", Amount = "1", Chance = "25%"},
+					{Type = "Item", Name = "Slime Goo", Amount = "1", Chance = "10%"},
+				},
+
+				Model = "Blue Slime",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+			{
+				Name = "Yellow Slime",
+				Type = nil,
+				Race = "Spirit",
+				Health = 2000,
+				Damage = 500,
+				Speed = 20,
+				Defense = "5%",
+				Location = "Ruin's Pass Grove/Deposit/Pillars/Upper Grove",
+
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "600-800", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "400-600", Chance = "100%"},
+					{Type = "Item", Name = "[☆3] Essence", Amount = "5", Chance = "100%"},
+					{Type = "Item", Name = "[☆4] Apple", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Slime Goo", Amount = "3", Chance = "25%"},
+					{Type = "Item", Name = "Soul Fragment", Amount = "1", Chance = "0.5%"},
+				},
+
+				Model = "Elite Slime",
+				ModelCFrame = CFrame.new(0, -2, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+		},
+		
+		["Pirate Cove"] = {
+			{
+				Name = "Captain Eli",
+				Type = "World Boss",
+				Race = "Human",
+				Health = 50000,
+				Damage = 350,
+				Speed = 30,
+				Defense = "25%",
+				Location = "Pirate Cove",
+				
+				Drops = {
+					{Type = "Stat", Name = "XP", Amount = "2.5k-5k", Chance = "100%"},
+					{Type = "Stat", Name = "Gold", Amount = "1k-2.5k", Chance = "100%"},
+					{Type = "Item", Name = "[☆5] Cleanser", Amount = "1", Chance = "100%"},
+					{Type = "Item", Name = "[☆5] Veiled Enchant Tome", Amount = "1", Chance = "100%"},
+					{Type = "Item", Name = "[☆5] Essence", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "Soul Fragment", Amount = "3", Chance = "100%"},
+					{Type = "Item", Name = "Pink Sauce", Amount = "1", Chance = "1%"},
+					{Type = "Item", Name = "Eli's Hat", Amount = "1", Chance = "0.33%*"},
+				},
+				
+				Model = "Captain Eli",
+				ModelCFrame = CFrame.new(0, 0, -8) * CFrame.Angles(0, math.rad(180), 0),
+			},
+		},
+	}
+}
+
+return module

@@ -175,4 +175,45 @@ function Spells:Health(Player, Spell, _, Properties)
 	end
 end
 
+function Spells:Teleport(Player, Spell, _, Properties, SpellLib)
+	local TargetPosition = Properties.Destination
+	if not TargetPosition then
+		warn("Teleport Spell missing 'Destination' in config Properties!")
+		return
+	end
+
+	-- Call back to SpellLib to perform the transition
+	SpellLib:Teleport(Player, TargetPosition)
+end
+
+function Spells:PersonalTeleport(Player, Spell, _, Properties, SpellLib)
+	-- 1. Read the custom destination from the DataManager's compound string
+	local enchantAttr = Spell:GetAttribute("Enchantments")
+	if not enchantAttr or enchantAttr == "" then return end
+
+	local split = string.split(enchantAttr, ",")
+	local coordsStr = nil
+
+	-- Because the UI sorts strings alphabetically, dynamically find the coordinate string
+	for _, str in ipairs(split) do
+		if string.find(str, "_") then
+			coordsStr = str
+			break
+		end
+	end
+
+	if not coordsStr then return end
+
+	-- 2. Convert string coordinates back to Vector3
+	local axes = string.split(coordsStr, "_")
+	local TargetPosition = Vector3.new(tonumber(axes[1]), tonumber(axes[2]), tonumber(axes[3]))
+
+	-- 3. Clone properties and overwrite the destination
+	local customProps = table.clone(Properties or {})
+	customProps.Destination = TargetPosition
+
+	-- 4. Route directly into the standard Teleport logic for combat/stun checks & VFX
+	self:Teleport(Player, Spell, _, customProps, SpellLib)
+end
+
 return Spells

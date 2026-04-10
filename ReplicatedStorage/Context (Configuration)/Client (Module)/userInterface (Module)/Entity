@@ -25,8 +25,6 @@ local GameConfig = require(ReplicatedStorage.GameConfig)
 --> Variables
 local MobRankColors = GameConfig.MobRankColors
 
--- vv i was planning to make this cross script but i got too lazy
--- can still be used cross clients though, so I'll keep
 shared.Boss = {Name = nil, Instance = nil} 
 
 --> Configuration

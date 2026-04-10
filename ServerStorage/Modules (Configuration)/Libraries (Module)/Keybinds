@@ -85,19 +85,39 @@ EventModule:GetOnServerEvent("ClientToServerKeybind"):Connect(function(Player, I
 	end
 	
 	local RequestedCooldown = nil
-	
+
 	for Key, Data in ConfigKeybinds do
 		if Data[1] == KeybindName then
 			RequestedCooldown = Data[2]
 			break
 		end
 	end
-	
-	local Item = Items[ItemType]:FindFirstChild(ItemName)
-	if not Item or Item:IsA("NumberValue") and Item.Value < 1 then 
+
+	-- Validate the ability BEFORE applying the server-side cooldown
+	local Callback = Callbacks[KeybindName]
+	if Verdict and Callback and Callback.Validate and not Callback:Validate(Player) then
 		return
 	end
 	
+	-- Find the item in the player's data even if it has enchantments/upgrades
+	local Item = nil
+	for _, DataObject in ipairs(Items[ItemType]:GetChildren()) do
+		-- Split the saved name (e.g. "Iron Sword|Flame") to get the Base Name
+		local savedBaseName = string.split(DataObject.Name, "|")[1]
+
+		if savedBaseName == ItemName then
+			-- Ensure the player actually owns this specific variant
+			if DataObject:IsA("NumberValue") and DataObject.Value >= 1 then
+				Item = DataObject
+				break
+			end
+		end
+	end
+
+	-- If the item still isn't found in data, the player doesn't own it
+	if not Item then 
+		return
+	end
 	PerPlayerCooldown[Player] = (PerPlayerCooldown[Player] or {})
 	PerPlayerCooldown[Player][KeybindName] = (PerPlayerCooldown[Player][KeybindName] or {})
 	

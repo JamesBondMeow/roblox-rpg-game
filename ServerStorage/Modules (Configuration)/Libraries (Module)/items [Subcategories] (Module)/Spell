@@ -1,29 +1,21 @@
 --[[
 	SpellLib
-	
-	Look under the module 'Spells' to configure how the spell system itself works.
-	I recommend to copypaste this script if you're intending to use anything for new libraries
 ]]
 
 --> Services
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
-local ServerStorage = game:GetService("ServerStorage")
 
 --> Dependencies
 local GameConfig = require(ReplicatedStorage.GameConfig)
-
 local EventModule = require(ReplicatedStorage.Modules.Shared.Event)
 local CreateValue = require(ServerStorage.Modules.Server.createValue)
 local RemoveValue = require(ServerStorage.Modules.Server.removeValue)
-
 local Spells = require(script.Suites)
-
 local PlayerData = ReplicatedStorage:WaitForChild("PlayerData")
 
 --> Config
 local Library = script.Name
-
 local SpellLib = {}
 local Cooldown = {}
 
@@ -36,87 +28,103 @@ end
 
 function SpellLib:Give(Player: Player, Tool, DontSave, ShopBought, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-	
+
 	local isItem = typeof(Tool) == "table" 
 	if not isItem then
-		warn(`Item {Library} --> {tostring(Tool) or "nil"} doesn't exist as a table, try using ContentLibrary.`)
+		warn(`Item {Library} --> {tostring(Tool) or "nil"} doesn't exist as a table.`)
 		return
 	end
-	
+
 	if pData then
 		local Found = pData.Items[Library]:FindFirstChild(Tool.Name)
-		
 		local IsStackable = GameConfig.CanItemsStack or GameConfig.Categories[Library].IsStackable
 		local CanGive = ((not Found) or IsStackable)
-		
 		local CanBuyMultiple = ShopBought == "Force" or (ShopBought and (not Tool.Config.Cost[4]) and IsStackable)
 		if CanGive or CanBuyMultiple then
 			CreateValue(pData, Tool, DontSave, Amount, Library)
-			
+
+			-- Don't let enchanted tools trick FindFirstChild into skipping physical delivery
+			local function hasExactTool(container)
+				for _, t in ipairs(container:GetChildren()) do
+					if t.Name == Tool.Name and (not t:GetAttribute("Enchantments") or t:GetAttribute("Enchantments") == "") then
+						return true
+					end
+				end
+				return false
+			end
+
 			local StarterGear = Player:FindFirstChild("StarterGear")
-			if StarterGear and not StarterGear:FindFirstChild(Tool.Name) then
-				Tool.Instance:Clone().Parent = StarterGear
-			end
-			
+			if StarterGear and not hasExactTool(StarterGear) then Tool.Instance:Clone().Parent = StarterGear end
 			local Backpack = Player:WaitForChild("Backpack")
-			if Backpack and not Backpack:FindFirstChild(Tool.Name) then
-				Tool.Instance:Clone().Parent = Backpack
-			end
+			if Backpack and not hasExactTool(Backpack) then Tool.Instance:Clone().Parent = Backpack end
 
 			return true
 		end
 	else
-		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
+		warn(("pData for Player '%s' doesn't exist!"):format(Player.Name))
 	end
 end
 
 function SpellLib:Trash(Player: Player, Tool, Amount)
 	local pData = PlayerData:WaitForChild(Player.UserId, 5)
-
 	if pData then
 		RemoveValue(pData, Tool, Amount, Library)
-
 		local CompletelyRemoved = not pData.Items[Library]:FindFirstChild(Tool.Name)
 		if CompletelyRemoved then
-			if Player.StarterGear:FindFirstChild(Tool.Name) then
-				Player.StarterGear[Tool.Name]:Destroy()
-			end
-			if Player.Backpack:FindFirstChild(Tool.Name) then
-				Player.Backpack[Tool.Name]:Destroy()
-			end
-			if Player.Character and Player.Character:FindFirstChild(Tool.Name) then
-				Player.Character[Tool.Name]:Destroy()
-			end
+			if Player.StarterGear:FindFirstChild(Tool.Name) then Player.StarterGear[Tool.Name]:Destroy() end
+			if Player.Backpack:FindFirstChild(Tool.Name) then Player.Backpack[Tool.Name]:Destroy() end
+			if Player.Character and Player.Character:FindFirstChild(Tool.Name) then Player.Character[Tool.Name]:Destroy() end
 		end
 	else
-		warn(("pData for Player '%s' doesn't exist! Did they leave?"):format(Player.Name))
+		warn(("pData for Player '%s' doesn't exist!"):format(Player.Name))
+	end
+end
+
+-- Teleport Logic (Replicating Portal Logic)
+function SpellLib:Teleport(Player, Position)
+	local Character = Player.Character
+	if Character then
+		-- Fire Client to do the transition effect
+		EventModule:FireClient("RequestTeleport", Player, Position, true)
 	end
 end
 
 function SpellLib:Commit(Player, Spell, MobInstance)
 	local Character = Player.Character
-	local Enemy = MobInstance and MobInstance:FindFirstChild("Enemy")
-	if MobInstance and (not Enemy or Enemy.Health <= 0) then return end
-	
+
 	-- Get cooldown checks & tool
 	local ItemConfig = Spell:FindFirstChild("ItemConfig") and require(Spell.ItemConfig)
-	if not ItemConfig.Suite or ItemConfig.Type ~= "Spell" then return end
-	if MobInstance and ((Character:GetPivot().Position - MobInstance:GetPivot().Position).Magnitude > 150) then return end
-	
-	if not MobInstance or not ItemConfig.Suite[2].Damage then
-		if Cooldown[Player] and (os.clock() - Cooldown[Player]) < (ItemConfig.Cooldown / 1.5) then return end
-		Cooldown[Player] = os.clock()
+	if not ItemConfig or ItemConfig.Type ~= "Spell" or not ItemConfig.Suite then return end
+
+	if MobInstance then
+		local Enemy = MobInstance:FindFirstChild("Enemy")
+		if not Enemy or Enemy.Health <= 0 then return end
+		if ((Character:GetPivot().Position - MobInstance:GetPivot().Position).Magnitude > 150) then return end
 	end
-	
+
+	-- Cooldown Check
+	if not MobInstance or not ItemConfig.Suite[2].Damage then
+		if type(Cooldown[Player]) ~= "table" then
+			Cooldown[Player] = {} -- Convert from old global number to specific table
+		end
+
+		-- Create a unique key using the tool's name and its enchantments (coordinates)
+		local spellId = Spell:GetAttribute("Enchantments") and (Spell.Name .. "|" .. Spell:GetAttribute("Enchantments")) or Spell.Name
+
+		if Cooldown[Player][spellId] and (os.clock() - Cooldown[Player][spellId]) < (ItemConfig.Cooldown / 1.5) then return end
+		Cooldown[Player][spellId] = os.clock()
+	end
+
 	-- Get suite
 	local Suite = ItemConfig.Suite
 	local Process = Suite[1]
 	local Properties = Suite[2]
-	
+
 	-- Commit function
 	local Function = Spells[Process]
 	if Function then
-		task.spawn(Function, nil, Player, Spell, MobInstance, Properties)
+		-- Pass 'SpellLib' so the suite can call back to Teleport function
+		task.spawn(Function, Spells, Player, Spell, MobInstance, Properties, SpellLib)
 	end
 end
 
@@ -125,18 +133,18 @@ EventModule:GetOnServerInvoke("PlayerSpentMana", function(Player, SpellName)
 	local Character = Player.Character
 	local Humanoid = Character and Character:FindFirstChild("Humanoid") :: Humanoid
 	if not Humanoid or not Character then return end
-	
+
 	local Tool = Character:FindFirstChild(SpellName) or Player.Backpack:FindFirstChild(SpellName)
 	if not Tool or not Tool:IsA("Tool") then return end
-	
+
 	local ItemConfig = Tool:FindFirstChild("ItemConfig") and require(Tool.ItemConfig)
 	if not ItemConfig or ItemConfig.Type ~= "Spell" then return end
-	
+
 	local ManaAttributes = Humanoid:FindFirstChild("Mana")
 	if ItemConfig.ManaCost and (not ManaAttributes or ManaAttributes.Mana:GetAttribute("Default") < ItemConfig.ManaCost) then 
 		return 
 	end
-	
+
 	ManaAttributes.Mana:SetAttribute("Default", ManaAttributes.Mana:GetAttribute("Default") - ItemConfig.ManaCost)
 	return true
 end)
@@ -145,18 +153,103 @@ EventModule:GetOnServerEvent("PlayerUsedSpell"):Connect(function(Player, Spell, 
 	if not Player.Character or Spell == nil then return end
 	if (MobInstance ~= nil and typeof(MobInstance) ~= "Instance") or typeof(Spell) ~= "Instance" then return end
 	if not Spell:FindFirstChild("ItemConfig") or (not Spell:IsDescendantOf(Player.Character) and not Spell:IsDescendantOf(Player)) then return end
+
+	-- Teleport Spell Bypass (No MobInstance required)
+	local ItemConfig = require(Spell.ItemConfig)
+	if ItemConfig.Suite[1] == "Teleport" or ItemConfig.Suite[1] == "PersonalTeleport" then
+		SpellLib:Commit(Player, Spell, nil)
+		return
+	end
+
 	if MobInstance and not MobInstance:IsDescendantOf(workspace:WaitForChild("Mobs")) then return end
-	
+
+	-- Mob Validation Logic (Omitted for brevity, assume same)
 	local UserId = GetUserID(Player)
 	local RegenerateTag = MobInstance and MobInstance:FindFirstChild("RegenerateTag")
 	local Config = MobInstance and MobInstance:FindFirstChild("MobConfig") and require(MobInstance.MobConfig)
 	if MobInstance and (not Config or (Config.InstantRefreshData and Config.InstantRefreshData.CanRefresh and RegenerateTag and (RegenerateTag:GetAttribute("PlayerID") ~= UserId and RegenerateTag:GetAttribute("PlayerID") ~= nil))) then return end
-	
+
 	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
 	local Level = pData and pData:FindFirstChild("Stats") and pData.Stats:FindFirstChild("Level")
 	if MobInstance and (not Level or (Level.Value < Config.Level[2])) then return end
-	
+
 	SpellLib:Commit(Player, Spell, MobInstance)
 end)
-	
+
+function SpellLib:SetPersonalLocation(Player, Tool, LocationName)
+	if not Tool or not Tool.Parent or not LocationName then return false, "Invalid data." end
+
+	-- Sanitize input
+	LocationName = string.gsub(string.sub(LocationName, 1, 20), "[%p%c]", "")
+	if LocationName == "" then LocationName = "Custom Waypoint" end
+
+	local pData = ReplicatedStorage.PlayerData:FindFirstChild(Player.UserId)
+	if not pData then return false, "Data missing." end
+
+	local Root = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+	if not Root then return false, "Character missing." end
+
+	-- Format the coordinates
+	local pos = Root.Position
+	local posStr = math.round(pos.X) .. "_" .. math.round(pos.Y) .. "_" .. math.round(pos.Z)
+
+	-- Construct oldFullName by sorting current enchantments to match UI keys
+	local baseName = Tool.Name
+	local oldAttr = Tool:GetAttribute("Enchantments")
+	local oldFullName = baseName
+
+	if oldAttr and oldAttr ~= "" then
+		local oldSplit = string.split(oldAttr, ",")
+		table.sort(oldSplit)
+		oldFullName = baseName .. "|" .. table.concat(oldSplit, "|")
+	end
+
+	-- Sort new attributes alphabetically for the new slot key
+	local encTable = {LocationName, posStr}
+	table.sort(encTable)
+	local newAttr = table.concat(encTable, ",")
+	local newFullName = baseName .. "|" .. table.concat(encTable, "|")
+
+	-- Update Saved PlayerData
+	local spellFolder = pData.Items:FindFirstChild("Spell")
+	if spellFolder then
+		-- Delete 1 copy from the old stack (blank or previous waypoint)
+		local oldVal = spellFolder:FindFirstChild(oldFullName) or spellFolder:FindFirstChild(baseName)
+		if oldVal then
+			if oldVal.Value > 1 then 
+				oldVal.Value -= 1 
+
+				-- This prevents the blank UI slot from deleting itself due to a missing physical tool.
+				local remainingTool = Tool:Clone()
+				remainingTool:SetAttribute("EnchantListenerActive", nil) 
+				remainingTool.Parent = Player:WaitForChild("Backpack")
+			else 
+				oldVal:Destroy() 
+			end
+		end
+
+		-- Instantly update physical tool BEFORE creating the new server DataValue.
+		Tool:SetAttribute("Enchantments", newAttr)
+
+		-- Give 1 copy to the new waypoint stack
+		local newVal = spellFolder:FindFirstChild(newFullName)
+		if newVal then
+			newVal.Value += 1
+		else
+			local v = Instance.new("NumberValue")
+			v.Name = newFullName
+			v.Value = 1
+			v.Parent = spellFolder
+		end
+	end
+
+	EventModule:FireClient("SendNotification", Player, "Waypoint Set!", `You have set your teleport location to '{LocationName}'.`, 12900311398, true)
+
+	return true, LocationName
+end
+
+EventModule:GetOnServerInvoke("SetPersonalTeleportLocation", function(Player, Tool, LocationName)
+	return SpellLib:SetPersonalLocation(Player, Tool, LocationName)
+end)
+
 return SpellLib

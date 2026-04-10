@@ -20,11 +20,13 @@ local GameConfig = require(ReplicatedStorage.GameConfig)
 --> Variables
 local ProductLib = {}
 
+local BUNDLE_ID = "3526837746"
+
 --------------------------------------------------------------------------------
 
 local function WrapReturned(Function, Domain, UserID, ProductID)
 	local Given = false
-	
+
 	local Success = nil :: boolean
 	local Returns = nil :: any
 
@@ -53,14 +55,37 @@ function ProductLib:PlayerHasBadge(Player: Player, ProductID)
 end
 
 function ProductLib:PlayerHasGamepass(Player: Player, ProductID)
-	local Owns = AttributeModule:GetAttribute(Player, tostring(ProductID))
-	if Owns ~= nil then
-		return Owns
+	local idStr = tostring(ProductID)
+
+	-- 1. Check Roblox Attributes (Source of Truth for replication/saving)
+	if Player:GetAttribute(idStr) == true then
+		return true
 	end
-	
-	Owns = WrapReturned(MarketplaceService.UserOwnsGamePassAsync, MarketplaceService, Player.UserId, ProductID)
-	AttributeModule:SetAttribute(Player, tostring(ProductID), Owns)
-	return Owns
+
+	-- 2. Check Gamepass Bundle Ownership
+	-- If they own the bundle, they own this gamepass effectively
+	if Player:GetAttribute(BUNDLE_ID) == true then
+		-- Sync this specific gamepass attribute so UI/Save logic sees it
+		Player:SetAttribute(idStr, true)
+		AttributeModule:SetAttribute(Player, idStr, true)
+		return true
+	end
+
+	-- 3. Check Roblox API (Real Ownership)
+	local OwnsRoblox = WrapReturned(MarketplaceService.UserOwnsGamePassAsync, MarketplaceService, Player.UserId, ProductID)
+
+	if OwnsRoblox then
+		-- Update Cache/Attributes immediately
+		Player:SetAttribute(idStr, true)
+		AttributeModule:SetAttribute(Player, idStr, true)
+	end
+
+	return OwnsRoblox
+end
+
+function ProductLib:PlayerHasDeal(Player: Player, ProductID)
+	-- Deals are strictly attribute-based
+	return Player:GetAttribute(tostring(ProductID)) == true
 end
 
 function ProductLib:PlayerHasPremium(Player: Player)
@@ -69,40 +94,59 @@ end
 
 function ProductLib:PlayerIsInGroup(Player: Player, ProductID)
 	local Returns = nil
-	
+
 	local Success = pcall(function()
 		Returns = Player:IsInGroup(ProductID)
 	end)
-	
+
 	return Returns
 end
 
 function ProductLib:PlayerHasProduct(Player: Player, ProductID, ProductType)
 	local Function = nil
-	
+
+	-- Dynamically find the function based on the ProductType string
+	-- e.g. "Gamepass" matches "PlayerHasGamepass"
+	-- e.g. "Deal" matches "PlayerHasDeal"
 	for Name, Found in ProductLib do
 		if not string.match(Name, ProductType) then
 			continue
 		end
 
 		Function = Found
+		break -- Stop once found
 	end
-	
-	return Function(nil, Player, ProductID)
+
+	if Function then
+		-- Pass 'nil' as self because we grabbed the function directly from the table
+		return Function(nil, Player, ProductID)
+	else
+		warn("ProductLib: No handler found for ProductType: " .. tostring(ProductType))
+		return false
+	end
 end
 
 function ProductLib:GetProducts(Player)
 	local Products = {}
-	
+
 	for _, Product in GameConfig.Products do
 		local Owned = ProductLib:PlayerHasProduct(Player, Product.AssetID, Product.Type)
-		
+
 		if Owned then
 			table.insert(Products, Product)
 		end
 	end
-	
+
 	return Products
+end
+
+-- Update the cache after purchase
+function ProductLib:UpdateOwnershipCache(Player: Player, ProductID: number, Owns: boolean)
+	local idStr = tostring(ProductID)
+	-- Update BOTH internal module and Roblox instance for replication
+	AttributeModule:SetAttribute(Player, idStr, Owns)
+	Player:SetAttribute(idStr, Owns) 
+	print("Updated ownership cache for player", Player.Name, "product", ProductID, "to", Owns)
 end
 
 return ProductLib
